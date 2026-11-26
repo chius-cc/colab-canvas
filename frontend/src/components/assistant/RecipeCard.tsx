@@ -12,6 +12,7 @@ interface RecipeCardProps {
   linkedJob?: JobRecord | null;
   onApply: (recipe: CanvasRecipe) => void;
   onGenerate: (recipe: CanvasRecipe) => Promise<void>;
+  onCancelJob?: (jobId: string) => Promise<void>;
   onOpenGallery: () => void;
 }
 
@@ -21,6 +22,7 @@ export function RecipeCard({
   linkedJob,
   onApply,
   onGenerate,
+  onCancelJob,
   onOpenGallery,
 }: RecipeCardProps) {
   const { dict } = useI18n();
@@ -101,14 +103,32 @@ export function RecipeCard({
 
       {linkedJob && (
         <div className="space-y-2 rounded-md border border-[#E5E0D6] bg-[#FFFFFF] p-2.5">
-          <div className="flex items-center justify-between text-[11px]">
+          <div className="flex items-center justify-between gap-2 text-[11px]">
             <span className="font-medium text-[#1A1D24]">
               {dict.studio.status[linkedJob.status]}
             </span>
-            <span className="font-mono text-[#62666F] tabular-nums">
-              {Math.round(linkedJob.progress * 100)}%
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[#62666F] tabular-nums">
+                {Math.round(linkedJob.progress * 100)}%
+              </span>
+              {onCancelJob &&
+                (linkedJob.status === "queued" ||
+                  linkedJob.status === "booting") && (
+                  <button
+                    type="button"
+                    onClick={() => void onCancelJob(linkedJob.id)}
+                    className="text-[11px] font-medium text-[#B43B2E] hover:underline"
+                  >
+                    {dict.studio.cancelJob}
+                  </button>
+                )}
+            </div>
           </div>
+          {isRunning && linkedJob.stage_detail && (
+            <p className="text-[11px] text-[#4A4E58]">
+              {linkedJob.stage_detail}
+            </p>
+          )}
           {isRunning && (
             <div className="h-1 w-full overflow-hidden rounded-full bg-[#E5E0D6]">
               <div

@@ -237,6 +237,8 @@ export interface JobRecord {
   variant: string;
   params: JobParams;
   status: JobStatus;
+  stage?: string | null;
+  stage_detail?: string | null;
   comfy_prompt_id: string | null;
   progress: number;
   error_msg: string | null;
@@ -400,6 +402,8 @@ export interface JobUpdatedEvent {
   job_id: string;
   status: JobStatus;
   progress?: number;
+  stage?: string | null;
+  stage_detail?: string | null;
   image_ids?: string[];
   error?: string;
 }

@@ -23,7 +23,9 @@ from app.colab.account_pool import AccountPool
 from app.colab.gateway import (
     AcceleratorNotEntitledError,
     AssignedSession,
+    AssignmentCancelledError,
     ColabGateway,
+    GpuCapacityUnavailableError,
     TooManyAssignmentsGatewayError,
 )
 from app.colab.reconcile import Reconciler
@@ -89,10 +91,43 @@ class WorkerManager:
 
         self._active: ManagedWorkerState | None = None
         self._active_job_id: str | None = None
+        self._job_stages: dict[str, dict[str, str]] = {}
         self._worker_lock = asyncio.Lock()
         self._queue_event = asyncio.Event()
         self._stop_event = asyncio.Event()
         self._tasks: list[asyncio.Task[None]] = []
+
+    def get_job_stage(self, job_id: str) -> tuple[str | None, str | None]:
+        entry = self._job_stages.get(job_id)
+        if not entry:
+            return None, None
+        return entry.get("stage"), entry.get("detail")
+
+    def clear_job_stage(self, job_id: str) -> None:
+        self._job_stages.pop(job_id, None)
+
+    async def _set_job_stage(
+        self,
+        job_id: str,
+        user_id: str,
+        *,
+        status: str,
+        stage: str,
+        detail: str,
+        progress: float = 0.0,
+    ) -> None:
+        self._job_stages[job_id] = {"stage": stage, "detail": detail}
+        await self.events.publish(
+            "job.updated",
+            {
+                "job_id": job_id,
+                "status": status,
+                "progress": progress,
+                "stage": stage,
+                "stage_detail": detail,
+            },
+            user_id=user_id,
+        )
 
     @property
     def active_managed_endpoints(self) -> set[str]:
@@ -284,7 +319,26 @@ class WorkerManager:
         if gpu_type.upper() == "L4" and self.settings.allow_a100_fallback:
             gpu_order.append("A100")
 
+        async def _is_cancelled() -> bool:
+            row = await self.db.fetchone("SELECT status FROM jobs WHERE id = ?", (job_id,))
+            return row is None or str(row["status"]) == "cancelled"
+
+        async def _on_retry(attempt: int, max_attempts: int, delay: float, reason: str) -> None:
+            await self._set_job_stage(
+                job_id,
+                user_id,
+                status="booting",
+                stage="assign_retry",
+                detail=(
+                    f"Colab {target_gpu} 繁忙 ({reason})，"
+                    f"{int(delay)}s 后第 {attempt + 1}/{max_attempts} 次重试…"
+                ),
+            )
+
         assigned: tuple[str, dict[str, Any], Path, AssignedSession] | None = None
+        last_capacity_error: GpuCapacityUnavailableError | None = None
+        saw_412 = False
+
         for target_gpu in gpu_order:
             if target_gpu == "T4":
                 continue
@@ -295,19 +349,32 @@ class WorkerManager:
                 session_name = f"cc-{uuid.uuid4().hex[:8]}"
                 try:
                     sess = await self.gateway.assign(
-                        adc, gpu_type=target_gpu, session_name=session_name
+                        adc,
+                        gpu_type=target_gpu,
+                        session_name=session_name,
+                        should_cancel=_is_cancelled,
+                        on_retry=_on_retry,
                     )
                     assigned = (acc_id, adc, home_dir, sess)
                     break
                 except TooManyAssignmentsGatewayError:
+                    saw_412 = True
                     continue
                 except AcceleratorNotEntitledError:
                     await self.account_pool.mark_gpu_unsupported(acc_id, target_gpu)
+                    continue
+                except GpuCapacityUnavailableError as exc:
+                    last_capacity_error = exc
                     continue
             if assigned is not None:
                 break
 
         if assigned is None:
+            if last_capacity_error is not None and not saw_412:
+                raise GpuCapacityUnavailableError(
+                    f"Colab {gpu_type} 当前算力紧张（{last_capacity_error}），"
+                    "请稍后重试或切换其他加速卡"
+                )
             await self.events.publish(
                 "pool.gpu_unavailable",
                 {"gpu_type": gpu_type, "job_id": job_id},
@@ -348,10 +415,12 @@ class WorkerManager:
             "worker.updated",
             {"worker_id": worker_id, "status": "bootstrapping", "gpu_type": sess.gpu_type},
         )
-        await self.events.publish(
-            "job.updated",
-            {"job_id": job_id, "status": "booting", "progress": 0.0},
-            user_id=user_id,
+        await self._set_job_stage(
+            job_id,
+            user_id,
+            status="booting",
+            stage="bootstrapping",
+            detail="正在初始化 ComfyUI 与模型权重…",
         )
 
         try:
@@ -372,6 +441,13 @@ class WorkerManager:
             )
             await self.gateway.exec_in_kernel(sess, boot_code, timeout=600.0)
 
+            await self._set_job_stage(
+                job_id,
+                user_id,
+                status="booting",
+                stage="tunneling",
+                detail="正在建立安全隧道并连接 ComfyUI…",
+            )
             _, sessions_path = self.gateway.prepare_account_home(home_dir, adc, session=sess)
             proxy_cmd, env = self.gateway.build_ssh_proxy_command(
                 home_dir=home_dir,
@@ -467,6 +543,8 @@ class WorkerManager:
         workflow_id: str,
         variant: str,
         lora_rows: list[dict[str, Any]],
+        job_id: str | None = None,
+        user_id: str | None = None,
     ) -> None:
         manifest = self.workflows.get(workflow_id).manifest
         vspec = manifest.variants[variant]
@@ -500,6 +578,14 @@ class WorkerManager:
         if not required_files:
             return
 
+        if job_id and user_id:
+            await self._set_job_stage(
+                job_id,
+                user_id,
+                status="booting",
+                stage="loading_files",
+                detail="正在同步模型与 LoRA 权重…",
+            )
         vm_boot = _load_vm_bootstrap_module(self.settings.scripts_dir)
         code = vm_boot.render_ensure_files_code(
             required_files, civitai_token=self.settings.civitai_api_token
@@ -529,6 +615,21 @@ class WorkerManager:
 
         self._active_job_id = job_id
         try:
+            cur = await self.db.execute(
+                "UPDATE jobs SET status = 'booting' WHERE id = ? AND status = 'queued'",
+                (job_id,),
+            )
+            if cur.rowcount != 1:
+                return True
+
+            await self._set_job_stage(
+                job_id,
+                user_id,
+                status="booting",
+                stage="assigning",
+                detail=f"正在申请 Colab {gpu_type} 算力…",
+            )
+
             worker = await self._ensure_ready_worker(
                 gpu_type=gpu_type,
                 workflow_id=workflow_id,
@@ -537,7 +638,26 @@ class WorkerManager:
                 user_id=user_id,
             )
             if worker is None:
-                # Leave job queued so next cycle retries once GPU capacity returns
+                # 412 / capacity slot occupied: return job to queued cleanly
+                await self.db.execute(
+                    """
+                    UPDATE jobs
+                    SET status = 'queued', worker_id = NULL
+                    WHERE id = ? AND status = 'booting'
+                    """,
+                    (job_id,),
+                )
+                await self.events.publish(
+                    "job.updated",
+                    {
+                        "job_id": job_id,
+                        "status": "queued",
+                        "progress": 0.0,
+                        "stage": "queued_pool_busy",
+                        "stage_detail": "算力池忙碌，继续排队等待空闲槽位…",
+                    },
+                    user_id=user_id,
+                )
                 return False
 
             # Confirm job wasn't cancelled while bootstrapping
@@ -562,6 +682,8 @@ class WorkerManager:
                 workflow_id=workflow_id,
                 variant=variant,
                 lora_rows=lora_rows,
+                job_id=job_id,
+                user_id=user_id,
             )
 
             seed = int(params.get("seed") or random.randint(1, 2**31 - 1))
@@ -593,19 +715,30 @@ class WorkerManager:
                 """,
                 (worker.worker_id, prompt_id, job_id),
             )
-            await self.events.publish(
-                "job.updated",
-                {"job_id": job_id, "status": "running", "progress": 0.0},
-                user_id=user_id,
+            await self._set_job_stage(
+                job_id,
+                user_id,
+                status="running",
+                stage="sampling",
+                detail="正在生成图像…",
+                progress=0.0,
             )
 
             async def _on_progress(pct: float) -> None:
+                detail = f"正在生成图像 ({round(pct * 100)}%)…"
+                self._job_stages[job_id] = {"stage": "sampling", "detail": detail}
                 await self.db.execute(
                     "UPDATE jobs SET progress = ? WHERE id = ?", (pct, job_id)
                 )
                 await self.events.publish(
                     "job.updated",
-                    {"job_id": job_id, "status": "running", "progress": round(pct, 3)},
+                    {
+                        "job_id": job_id,
+                        "status": "running",
+                        "progress": round(pct, 3),
+                        "stage": "sampling",
+                        "stage_detail": detail,
+                    },
                     user_id=user_id,
                 )
 
@@ -651,6 +784,7 @@ class WorkerManager:
                 """,
                 (now_iso, job_id),
             )
+            self._job_stages.pop(job_id, None)
             await self.events.publish(
                 "job.updated",
                 {
@@ -658,12 +792,31 @@ class WorkerManager:
                     "status": "completed",
                     "progress": 1.0,
                     "image_ids": image_ids,
+                    "stage": None,
+                    "stage_detail": None,
                 },
                 user_id=user_id,
             )
             return True
 
+        except AssignmentCancelledError:
+            self._job_stages.pop(job_id, None)
+            await self.db.execute(
+                """
+                UPDATE jobs
+                SET status = 'cancelled', finished_at = COALESCE(finished_at, ?)
+                WHERE id = ?
+                """,
+                (datetime.now(UTC).isoformat(), job_id),
+            )
+            await self.events.publish(
+                "job.updated",
+                {"job_id": job_id, "status": "cancelled", "stage": None, "stage_detail": None},
+                user_id=user_id,
+            )
+            return True
         except Exception as exc:
+            self._job_stages.pop(job_id, None)
             err_msg = f"{type(exc).__name__}: {exc}"[:500]
             await self.db.execute(
                 "UPDATE jobs SET status = 'failed', error_msg = ?, finished_at = ? WHERE id = ?",
@@ -671,12 +824,19 @@ class WorkerManager:
             )
             await self.events.publish(
                 "job.updated",
-                {"job_id": job_id, "status": "failed", "error": err_msg},
+                {
+                    "job_id": job_id,
+                    "status": "failed",
+                    "error": err_msg,
+                    "stage": None,
+                    "stage_detail": None,
+                },
                 user_id=user_id,
             )
             return True
         finally:
             self._active_job_id = None
+            self._job_stages.pop(job_id, None)
 
     async def emergency_stop_worker(self, worker_id: str) -> dict[str, Any]:
         row = await self.db.fetchone("SELECT * FROM workers WHERE id = ?", (worker_id,))

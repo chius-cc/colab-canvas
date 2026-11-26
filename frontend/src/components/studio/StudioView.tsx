@@ -1178,7 +1178,7 @@ export function StudioView({
               {visibleJobs.slice(0, 12).map((job) => {
                 const selected = focusedJob?.id === job.id;
                 const canCancel =
-                  job.status === "queued" &&
+                  (job.status === "queued" || job.status === "booting") &&
                   (job.user_id === user.id || user.role === "admin");
                 return (
                   <li
@@ -1215,7 +1215,12 @@ export function StudioView({
                           </span>
                         </div>
                         <p className="mt-0.5 truncate text-xs text-[#4A4E58]">
-                          {job.params.prompt}
+                          {(job.status === "queued" ||
+                            job.status === "booting" ||
+                            job.status === "running") &&
+                          job.stage_detail
+                            ? job.stage_detail
+                            : job.params.prompt}
                         </p>
                       </div>
                     </button>
@@ -1282,7 +1287,8 @@ export function StudioView({
                 <span className="font-mono text-xs font-medium text-[#1A1D24] tabular-nums">
                   {Math.round(focusedJob.progress * 100)}%
                 </span>
-                {focusedJob.status === "queued" &&
+                {(focusedJob.status === "queued" ||
+                  focusedJob.status === "booting") &&
                   (focusedJob.user_id === user.id || user.role === "admin") && (
                     <Button
                       variant="destructiveOutline"
@@ -1401,7 +1407,9 @@ export function StudioView({
                   <div className="flex min-h-[420px] flex-col items-center justify-center rounded-lg border border-dashed border-[#D4CEC2] bg-[#FAF8F4] p-8 text-center">
                     <Loader2 className="h-6 w-6 animate-spin text-[#C85642]" />
                     <p className="mt-3 text-sm font-medium text-[#1A1D24]">
-                      {focusedJob.status === "queued"
+                      {focusedJob.stage_detail
+                        ? focusedJob.stage_detail
+                        : focusedJob.status === "queued"
                         ? dict.studio.stageQueued
                         : focusedJob.status === "booting"
                         ? dict.studio.stageBooting

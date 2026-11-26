@@ -254,10 +254,24 @@ export function App() {
           }
           const copy = [...prev];
           const cur = copy[idx];
+          const terminal =
+            ev.status === "completed" ||
+            ev.status === "failed" ||
+            ev.status === "cancelled";
           copy[idx] = {
             ...cur,
             status: ev.status,
             progress: ev.progress !== undefined ? ev.progress : cur.progress,
+            stage: terminal
+              ? null
+              : ev.stage !== undefined
+              ? ev.stage
+              : cur.stage,
+            stage_detail: terminal
+              ? null
+              : ev.stage_detail !== undefined
+              ? ev.stage_detail
+              : cur.stage_detail,
             image_ids: ev.image_ids ?? cur.image_ids,
             error_msg: ev.error ?? cur.error_msg,
           };
@@ -537,6 +551,21 @@ export function App() {
     navigate("pool");
   }, [navigate]);
 
+  const handleCancelJob = useCallback(
+    async (jobId: string) => {
+      try {
+        const res = await jobsApi.cancel(jobId);
+        setJobs((prev) =>
+          prev.map((item) => (item.id === res.job.id ? res.job : item))
+        );
+        void refreshMe();
+      } catch {
+        // Ignore stale state errors; SSE/refresh syncs state
+      }
+    },
+    [refreshMe]
+  );
+
   const activeJobCount = useMemo(
     () =>
       jobs.filter(
@@ -615,6 +644,7 @@ export function App() {
               onClearChat={() => setChatMessages([])}
               onApplyRecipeToStudio={(r) => handleApplyRecipeFromChat(r, true)}
               onGenerateFromRecipe={handleGenerateFromRecipe}
+              onCancelJob={handleCancelJob}
               onOpenAssistantSettings={openAssistantSettings}
               onOpenGallery={() => navigate("gallery")}
             />
@@ -694,6 +724,7 @@ export function App() {
               handleApplyRecipeFromChat(r, route !== "studio")
             }
             onGenerateFromRecipe={handleGenerateFromRecipe}
+            onCancelJob={handleCancelJob}
             onExpandToInspire={() => {
               setCopilotOpen(false);
               navigate("chat");

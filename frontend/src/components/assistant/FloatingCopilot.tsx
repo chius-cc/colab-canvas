@@ -42,6 +42,7 @@ interface FloatingCopilotProps {
     recipeIndex: number,
     recipe: CanvasRecipe
   ) => Promise<void>;
+  onCancelJob?: (jobId: string) => Promise<void>;
   onExpandToInspire: () => void;
   onOpenAssistantSettings: () => void;
   onOpenGallery: () => void;
@@ -60,6 +61,7 @@ export function FloatingCopilot({
   onStopStreaming,
   onApplyRecipeToStudio,
   onGenerateFromRecipe,
+  onCancelJob,
   onExpandToInspire,
   onOpenAssistantSettings,
   onOpenGallery,
@@ -258,6 +260,7 @@ export function FloatingCopilot({
                       onGenerate={(r) =>
                         onGenerateFromRecipe(msg.id, seg.recipeIndex, r)
                       }
+                      onCancelJob={onCancelJob}
                       onOpenGallery={onOpenGallery}
                     />
                   );

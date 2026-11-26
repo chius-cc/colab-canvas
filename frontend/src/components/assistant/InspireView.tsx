@@ -40,6 +40,7 @@ interface InspireViewProps {
     recipeIndex: number,
     recipe: CanvasRecipe
   ) => Promise<void>;
+  onCancelJob?: (jobId: string) => Promise<void>;
   onOpenAssistantSettings: () => void;
   onOpenGallery: () => void;
 }
@@ -55,6 +56,7 @@ export function InspireView({
   onClearChat,
   onApplyRecipeToStudio,
   onGenerateFromRecipe,
+  onCancelJob,
   onOpenAssistantSettings,
   onOpenGallery,
 }: InspireViewProps) {
@@ -221,6 +223,7 @@ export function InspireView({
                         onGenerate={(r) =>
                           onGenerateFromRecipe(msg.id, seg.recipeIndex, r)
                         }
+                        onCancelJob={onCancelJob}
                         onOpenGallery={onOpenGallery}
                       />
                     );

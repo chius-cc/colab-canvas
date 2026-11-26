@@ -2,19 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import os
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
+import pytest
+from colab_cli.client import ColabRequestError
 
 from app.colab.gateway import (
     AcceleratorNotEntitledError,
     AssignedSession,
+    AssignmentCancelledError,
     CcuSnapshot,
     ColabGateway,
+    GpuCapacityUnavailableError,
     RemoteAssignment,
     TooManyAssignmentsGatewayError,
 )
@@ -69,8 +76,16 @@ class FakeWorkerGateway(ColabGateway):
         ]
 
     async def assign(
-        self, adc_json: dict[str, Any], *, gpu_type: str, session_name: str
+        self,
+        adc_json: dict[str, Any],
+        *,
+        gpu_type: str,
+        session_name: str,
+        should_cancel: Any = None,
+        on_retry: Any = None,
+        **_kwargs: Any,
     ) -> AssignedSession:
+        del should_cancel, on_retry
         rt = str(adc_json["refresh_token"])
         self.assign_calls.append((rt, gpu_type))
         mode = self.mode_by_token[rt]
@@ -379,3 +394,197 @@ async def test_job_submission_guards_and_emergency_stop(tmp_path) -> None:
                 json={"workflow_id": "anima", "variant": "base", "prompt": "blocked"},
             )
         ).status_code == 403
+
+
+async def test_gateway_assign_bounded_retry_and_cancel(tmp_path) -> None:
+    gw = ColabGateway(ssh_dir=tmp_path / "ssh", assign_retries=3)
+    seen_hashes: list[Any] = []
+    retry_events: list[tuple[int, int, float, str]] = []
+    unassigned: list[str] = []
+
+    class FakeClient:
+        def __init__(self, fail_times: int) -> None:
+            self.fail_times = fail_times
+            self.calls = 0
+
+        def assign(self, notebook_hash, variant=None, accelerator=None):
+            del variant, accelerator
+            assert os.environ.get("COLAB_CLI_ASSIGN_RETRIES") == "0"
+            seen_hashes.append(notebook_hash)
+            self.calls += 1
+            if self.calls <= self.fail_times:
+                resp = SimpleNamespace(status_code=503)
+                raise ColabRequestError("503 Service Unavailable", None, resp)
+            info = SimpleNamespace(
+                token="tok-ok",
+                url="https://mock.invalid",
+                expires_at=lambda: datetime.now(UTC) + timedelta(hours=1),
+            )
+            return SimpleNamespace(
+                endpoint="gpu-l4-test",
+                runtime_proxy_info=info,
+                accelerator=SimpleNamespace(value="L4"),
+            )
+
+    async def fake_unassign(_adc, ep: str) -> None:
+        unassigned.append(ep)
+
+    gw.unassign = fake_unassign  # type: ignore[method-assign]
+
+    # Case 1: succeeds on 3rd attempt with consistent notebook_hash
+    c1 = FakeClient(fail_times=2)
+    gw._build_client = lambda _adc: (c1, None)  # type: ignore[method-assign,return-value]
+
+    async def on_retry(att: int, max_att: int, delay: float, reason: str) -> None:
+        retry_events.append((att, max_att, delay, reason))
+
+    sess = await gw.assign(
+        _sample_adc("r"),
+        gpu_type="L4",
+        session_name="s1",
+        on_retry=on_retry,
+        retry_delays=(0.01, 0.01),
+    )
+    assert sess.endpoint == "gpu-l4-test"
+    assert len(set(seen_hashes)) == 1 and len(seen_hashes) == 3
+    assert retry_events == [(1, 3, 0.01, "HTTP 503"), (2, 3, 0.01, "HTTP 503")]
+
+    # Case 2: cancelled right after assign completes -> immediately unassigns
+    c2 = FakeClient(fail_times=0)
+    gw._build_client = lambda _adc: (c2, None)  # type: ignore[method-assign,return-value]
+    checks = iter([False, True])
+
+    async def flipped_cancel() -> bool:
+        return next(checks, True)
+
+    with pytest.raises(AssignmentCancelledError):
+        await gw.assign(
+            _sample_adc("r"),
+            gpu_type="L4",
+            session_name="s2",
+            should_cancel=flipped_cancel,
+        )
+    assert unassigned == ["gpu-l4-test"]
+
+    # Case 3: retries exhausted -> raises GpuCapacityUnavailableError cleanly
+    c3 = FakeClient(fail_times=5)
+    gw._build_client = lambda _adc: (c3, None)  # type: ignore[method-assign,return-value]
+    with pytest.raises(GpuCapacityUnavailableError):
+        await gw.assign(
+            _sample_adc("r"),
+            gpu_type="L4",
+            session_name="s3",
+            retry_delays=(0.01, 0.01),
+        )
+
+
+async def test_booting_cancel_live_stage_and_503_failure(tmp_path) -> None:
+    settings = make_test_settings(
+        tmp_path,
+        auth_mode="local",
+        initial_admin_email="admin@example.com",
+        initial_admin_password="adminpassword123",
+    )
+    assign_entered = asyncio.Event()
+    allow_finish = asyncio.Event()
+
+    class SlowOrBusyGateway(FakeWorkerGateway):
+        def __init__(self, ssh_dir: Path) -> None:
+            super().__init__(ssh_dir)
+            self.call_idx = 0
+
+        async def assign(
+            self,
+            adc_json: dict[str, Any],
+            *,
+            gpu_type: str,
+            session_name: str,
+            should_cancel: Any = None,
+            on_retry: Any = None,
+            **_kwargs: Any,
+        ) -> AssignedSession:
+            del adc_json, on_retry
+            self.call_idx += 1
+            if self.call_idx == 1:
+                raise GpuCapacityUnavailableError("Colab L4 capacity temporarily unavailable")
+            assign_entered.set()
+            await allow_finish.wait()
+            if should_cancel is not None and await should_cancel():
+                raise AssignmentCancelledError("Job cancelled during assignment")
+            self.active_endpoint = f"ep-slow-{gpu_type.lower()}"
+            return AssignedSession(
+                session_name=session_name,
+                endpoint=self.active_endpoint,
+                gpu_type=gpu_type,
+                token="tok",
+                url="https://mock.invalid",
+                token_expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+
+    gw = SlowOrBusyGateway(ssh_dir=tmp_path / "data" / "ssh")
+    fake_comfy = FakeComfyClient(make_png_bytes(128, 128))
+    app = create_app(
+        settings,
+        colab_gateway=gw,
+        comfy_client_factory=lambda _url: fake_comfy,
+        tunnel_factory=lambda **kw: FakeTunnel(**kw),
+        start_background_uploader=False,
+        start_background_workers=False,
+    )
+
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        await client.post(
+            "/api/auth/login",
+            json={"identifier": "admin@example.com", "password": "adminpassword123"},
+        )
+        await client.post(
+            "/api/pool/accounts",
+            json={"label": "Primary", "adc_json": _sample_adc("busy")},
+        )
+
+        # 1) Exhausted 503 fails loudly with clear message instead of hanging in queued
+        r1 = await client.post(
+            "/api/jobs",
+            json={"workflow_id": "anima", "variant": "turbo", "prompt": "p1"},
+        )
+        j1 = r1.json()["job"]["id"]
+        assert await app.state.worker_manager.process_next_job_once() is True
+        j1_after = (await client.get(f"/api/jobs/{j1}")).json()["job"]
+        assert j1_after["status"] == "failed"
+        assert "503" in (j1_after["error_msg"] or "") or "算力紧张" in (j1_after["error_msg"] or "")
+
+        # 2) Booting job shows live stage_detail & can be cancelled mid-assignment
+        r2 = await client.post(
+            "/api/jobs",
+            json={"workflow_id": "anima", "variant": "turbo", "prompt": "p2"},
+        )
+        j2 = r2.json()["job"]["id"]
+        worker_task = asyncio.create_task(app.state.worker_manager.process_next_job_once())
+        await assign_entered.wait()
+
+        live = (await client.get(f"/api/jobs/{j2}")).json()["job"]
+        assert live["status"] == "booting"
+        assert live["stage"] == "assigning"
+        assert live["stage_detail"] is not None
+
+        cancel_resp = await client.post(f"/api/jobs/{j2}/cancel")
+        assert cancel_resp.status_code == 200
+        assert cancel_resp.json()["job"]["status"] == "cancelled"
+
+        allow_finish.set()
+        assert await worker_task is True
+        j2_final = (await client.get(f"/api/jobs/{j2}")).json()["job"]
+        assert j2_final["status"] == "cancelled"
+        assert j2_final["stage"] is None
+
+        # 3) Running job cancel must still return 409 Conflict
+        await client.post(
+            "/api/jobs",
+            json={"workflow_id": "anima", "variant": "turbo", "prompt": "p3"},
+        )
+        j3 = (await client.get("/api/jobs?limit=1")).json()["jobs"][0]["id"]
+        await app.state.db.execute("UPDATE jobs SET status = 'running' WHERE id = ?", (j3,))
+        assert (await client.post(f"/api/jobs/{j3}/cancel")).status_code == 409

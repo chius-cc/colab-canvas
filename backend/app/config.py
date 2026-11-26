@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     balance_poll_active_seconds: float = 60.0
     allow_a100_fallback: bool = False
     civitai_api_token: str = ""
-    colab_assign_retries: int = 5
+    colab_assign_retries: int = 4
 
     workflows_dir: Path = Path("./workflows")
     scripts_dir: Path = Path("./scripts")

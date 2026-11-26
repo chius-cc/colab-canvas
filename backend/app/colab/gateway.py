@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shlex
@@ -10,11 +11,13 @@ import subprocess
 import sys
 import threading
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import requests
 from colab_cli.client import (
     Accelerator,
     Client,
@@ -55,6 +58,14 @@ class AcceleratorNotEntitledError(ColabGatewayError):
 
 class CredentialsInvalidError(ColabGatewayError):
     """Raised when ADC credentials cannot refresh or lack required Colab access."""
+
+
+class GpuCapacityUnavailableError(ColabGatewayError):
+    """Raised when transient Colab 502/503/504 or timeout errors exhaust retries."""
+
+
+class AssignmentCancelledError(ColabGatewayError):
+    """Raised when assignment is cancelled before or during allocation."""
 
 
 @dataclass(frozen=True)
@@ -261,6 +272,9 @@ class ColabGateway:
         *,
         gpu_type: str,
         session_name: str,
+        should_cancel: Callable[[], Awaitable[bool]] | None = None,
+        on_retry: Callable[[int, int, float, str], Awaitable[None]] | None = None,
+        retry_delays: tuple[float, ...] = (3.0, 6.0, 10.0, 15.0),
     ) -> AssignedSession:
         gpu = gpu_type.strip().upper()
         if gpu == "T4":
@@ -269,21 +283,16 @@ class ColabGateway:
         if acc is None:
             raise AcceleratorNotEntitledError(f"Unsupported GPU type '{gpu}'")
 
-        def _assign() -> AssignedSession:
+        notebook_hash = uuid.uuid4()
+        max_attempts = max(1, self.assign_retries)
+
+        def _assign_once() -> AssignedSession:
             client, _ = self._build_client(adc_json)
             with self._assign_env_lock:
                 prev = os.environ.get("COLAB_CLI_ASSIGN_RETRIES")
-                os.environ["COLAB_CLI_ASSIGN_RETRIES"] = str(self.assign_retries)
+                os.environ["COLAB_CLI_ASSIGN_RETRIES"] = "0"
                 try:
-                    res = client.assign(uuid.uuid4(), variant=Variant.GPU, accelerator=acc)
-                except TooManyAssignmentsError as exc:
-                    raise TooManyAssignmentsGatewayError(str(exc)) from exc
-                except ColabRequestError as exc:
-                    if get_status_code(exc) == 400:
-                        raise AcceleratorNotEntitledError(
-                            f"Account lacks quota or entitlement for {gpu}"
-                        ) from exc
-                    raise ColabGatewayError(f"Colab assign failed: {exc}") from exc
+                    res = client.assign(notebook_hash, variant=Variant.GPU, accelerator=acc)
                 finally:
                     if prev is None:
                         os.environ.pop("COLAB_CLI_ASSIGN_RETRIES", None)
@@ -301,7 +310,53 @@ class ColabGateway:
                 token_expires_at=info.expires_at(),
             )
 
-        return await asyncio.to_thread(_assign)
+        last_reason = "Service Unavailable"
+        for attempt in range(1, max_attempts + 1):
+            if should_cancel is not None and await should_cancel():
+                raise AssignmentCancelledError("Job cancelled before assignment")
+
+            try:
+                sess = await asyncio.to_thread(_assign_once)
+                if should_cancel is not None and await should_cancel():
+                    with contextlib.suppress(Exception):
+                        await self.unassign(adc_json, sess.endpoint)
+                    raise AssignmentCancelledError("Job cancelled during assignment")
+                return sess
+            except TooManyAssignmentsError as exc:
+                raise TooManyAssignmentsGatewayError(str(exc)) from exc
+            except ColabRequestError as exc:
+                code = get_status_code(exc)
+                if code == 400:
+                    raise AcceleratorNotEntitledError(
+                        f"Account lacks quota or entitlement for {gpu}"
+                    ) from exc
+                if code in (502, 503, 504):
+                    last_reason = f"HTTP {code}"
+                else:
+                    raise ColabGatewayError(f"Colab assign failed: {exc}") from exc
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+                last_reason = type(exc).__name__
+
+            if attempt >= max_attempts:
+                raise GpuCapacityUnavailableError(
+                    f"Colab {gpu} capacity temporarily unavailable ({last_reason})"
+                )
+
+            delay = retry_delays[min(attempt - 1, len(retry_delays) - 1)]
+            if on_retry is not None:
+                await on_retry(attempt, max_attempts, delay, last_reason)
+
+            remaining = delay
+            while remaining > 0:
+                if should_cancel is not None and await should_cancel():
+                    raise AssignmentCancelledError("Job cancelled while waiting to retry")
+                step = min(0.5, remaining)
+                await asyncio.sleep(step)
+                remaining -= step
+
+        raise GpuCapacityUnavailableError(
+            f"Colab {gpu} capacity temporarily unavailable ({last_reason})"
+        )
 
     async def unassign(self, adc_json: dict[str, Any], endpoint: str) -> None:
         def _unassign() -> None:

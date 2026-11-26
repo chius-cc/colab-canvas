@@ -44,7 +44,13 @@ class CreateJobRequest(BaseModel):
     gpu_type: str = "L4"
 
 
-def _format_job_row(row: Any, image_ids: list[str]) -> dict[str, Any]:
+def _format_job_row(
+    row: Any,
+    image_ids: list[str],
+    *,
+    stage: str | None = None,
+    stage_detail: str | None = None,
+) -> dict[str, Any]:
     return {
         "id": str(row["id"]),
         "user_id": str(row["user_id"]),
@@ -54,6 +60,8 @@ def _format_job_row(row: Any, image_ids: list[str]) -> dict[str, Any]:
         "variant": str(row["variant"]),
         "params": json.loads(str(row["params_json"])),
         "status": str(row["status"]),
+        "stage": stage,
+        "stage_detail": stage_detail,
         "comfy_prompt_id": row["comfy_prompt_id"],
         "progress": float(row["progress"]),
         "error_msg": row["error_msg"],
@@ -63,7 +71,12 @@ def _format_job_row(row: Any, image_ids: list[str]) -> dict[str, Any]:
     }
 
 
-async def _fetch_job_with_images(db: Database, job_id: str) -> dict[str, Any]:
+async def _fetch_job_with_images(
+    db: Database,
+    job_id: str,
+    *,
+    worker_manager: WorkerManager | None = None,
+) -> dict[str, Any]:
     row = await db.fetchone(
         """
         SELECT j.*, u.username AS username
@@ -78,7 +91,15 @@ async def _fetch_job_with_images(db: Database, job_id: str) -> dict[str, Any]:
     img_rows = await db.fetchall(
         "SELECT id FROM images WHERE job_id = ? ORDER BY created_at ASC", (job_id,)
     )
-    return _format_job_row(row, [str(r["id"]) for r in img_rows])
+    stage, stage_detail = (
+        worker_manager.get_job_stage(job_id) if worker_manager is not None else (None, None)
+    )
+    return _format_job_row(
+        row,
+        [str(r["id"]) for r in img_rows],
+        stage=stage,
+        stage_detail=stage_detail,
+    )
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
@@ -179,12 +200,13 @@ async def submit_job(
         {"job_id": job_id, "status": "queued", "progress": 0.0},
         user_id=user.id,
     )
-    job = await _fetch_job_with_images(db, job_id)
+    job = await _fetch_job_with_images(db, job_id, worker_manager=worker_manager)
     return {"job": job}
 
 
 @router.get("")
 async def list_jobs(
+    request: Request,
     mine: bool = False,
     status_filter: str | None = Query(default=None, alias="status"),
     limit: int = Query(default=40, ge=1, le=100),
@@ -213,23 +235,35 @@ async def list_jobs(
         """,
         [*params, limit, offset],
     )
+    worker_manager: WorkerManager = request.app.state.worker_manager
     jobs: list[dict[str, Any]] = []
     for row in rows:
+        jid = str(row["id"])
         img_rows = await db.fetchall(
             "SELECT id FROM images WHERE job_id = ? ORDER BY created_at ASC",
-            (row["id"],),
+            (jid,),
         )
-        jobs.append(_format_job_row(row, [str(r["id"]) for r in img_rows]))
+        stage, stage_detail = worker_manager.get_job_stage(jid)
+        jobs.append(
+            _format_job_row(
+                row,
+                [str(r["id"]) for r in img_rows],
+                stage=stage,
+                stage_detail=stage_detail,
+            )
+        )
     return {"jobs": jobs}
 
 
 @router.get("/{job_id}")
 async def get_job(
     job_id: str,
+    request: Request,
     _user: UserRecord = Depends(get_current_user),
     db: Database = Depends(get_db),
 ) -> dict[str, Any]:
-    return {"job": await _fetch_job_with_images(db, job_id)}
+    worker_manager: WorkerManager = request.app.state.worker_manager
+    return {"job": await _fetch_job_with_images(db, job_id, worker_manager=worker_manager)}
 
 
 @router.post("/{job_id}/cancel")
@@ -253,20 +287,23 @@ async def cancel_job(
         """
         UPDATE jobs
         SET status = 'cancelled', finished_at = ?
-        WHERE id = ? AND status = 'queued'
+        WHERE id = ? AND status IN ('queued', 'booting')
         """,
         (now_iso, job_id),
     )
     if cur.rowcount != 1:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Only queued jobs can be cancelled",
+            detail="Only queued or booting jobs can be cancelled",
         )
+
+    worker_manager: WorkerManager = request.app.state.worker_manager
+    worker_manager.clear_job_stage(job_id)
 
     events: EventBus = request.app.state.events
     await events.publish(
         "job.updated",
-        {"job_id": job_id, "status": "cancelled"},
+        {"job_id": job_id, "status": "cancelled", "stage": None, "stage_detail": None},
         user_id=str(row["user_id"]),
     )
-    return {"job": await _fetch_job_with_images(db, job_id)}
+    return {"job": await _fetch_job_with_images(db, job_id, worker_manager=worker_manager)}

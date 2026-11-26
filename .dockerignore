@@ -1,0 +1,64 @@
+# Version control & OS metadata
+.git
+.git/
+.DS_Store
+**/.DS_Store
+
+# Phase 0 spike artifacts & local dev state (must never enter build context or image)
+spike
+spike/
+**/spike/
+.local
+.local/
+**/.local/
+data
+data/
+/data/
+
+# Environment secrets
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Python virtualenvs & caches
+.venv
+.venv/
+**/.venv/
+backend/.venv/
+__pycache__
+__pycache__/
+**/__pycache__/
+*.py[cod]
+**/*.py[cod]
+.pytest_cache
+.pytest_cache/
+**/.pytest_cache/
+.ruff_cache
+.ruff_cache/
+**/.ruff_cache/
+*.egg-info
+*.egg-info/
+**/*.egg-info/
+
+# Frontend dependencies & build outputs (built cleanly in builder stage)
+frontend/node_modules
+frontend/node_modules/
+**/node_modules/
+frontend/dist
+frontend/dist/
+
+# Runtime SQLite databases, logs, sockets, locks
+*.db
+*.db*
+**/*.db*
+*.log
+**/*.log
+*.sock
+**/*.sock
+*.json.lock
+**/*.json.lock
+
+# Tests & docs (not needed in runtime image)
+backend/tests/
+docs/

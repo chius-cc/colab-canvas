@@ -1,0 +1,57 @@
+services:
+  colab-canvas:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${COLAB_CANVAS_IMAGE:-ghcr.io/chius-me/colab-canvas:latest}
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - colab_canvas_data:/data
+    environment:
+      CANVAS_SECRET_KEY: ${CANVAS_SECRET_KEY:-}
+      CANVAS_DATA_DIR: /data
+      CANVAS_HOST: 0.0.0.0
+      CANVAS_PORT: "8000"
+      AUTH_MODE: ${AUTH_MODE:-hybrid}
+      CF_ACCESS_TEAM_DOMAIN: ${CF_ACCESS_TEAM_DOMAIN:-}
+      CF_ACCESS_AUD: ${CF_ACCESS_AUD:-}
+      INITIAL_ADMIN_EMAIL: ${INITIAL_ADMIN_EMAIL:-}
+      INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-admin}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      DEFAULT_DAILY_QUOTA: ${DEFAULT_DAILY_QUOTA:-50}
+      DEFAULT_MAX_QUEUED: ${DEFAULT_MAX_QUEUED:-2}
+      MAX_BATCH_SIZE: ${MAX_BATCH_SIZE:-4}
+      SSE_HEARTBEAT_SECONDS: ${SSE_HEARTBEAT_SECONDS:-20}
+      OUTBOX_POLL_SECONDS: ${OUTBOX_POLL_SECONDS:-5}
+      WORKER_IDLE_TIMEOUT_SECONDS: ${WORKER_IDLE_TIMEOUT_SECONDS:-900}
+      WATCHDOG_IDLE_TIMEOUT_SECONDS: ${WATCHDOG_IDLE_TIMEOUT_SECONDS:-1200}
+      WATCHDOG_MAX_LIFETIME_SECONDS: ${WATCHDOG_MAX_LIFETIME_SECONDS:-21600}
+      WORKER_HEARTBEAT_INTERVAL_SECONDS: ${WORKER_HEARTBEAT_INTERVAL_SECONDS:-60}
+      RECONCILE_INTERVAL_SECONDS: ${RECONCILE_INTERVAL_SECONDS:-300}
+      BALANCE_POLL_IDLE_SECONDS: ${BALANCE_POLL_IDLE_SECONDS:-600}
+      BALANCE_POLL_ACTIVE_SECONDS: ${BALANCE_POLL_ACTIVE_SECONDS:-60}
+      ALLOW_A100_FALLBACK: ${ALLOW_A100_FALLBACK:-false}
+      CIVITAI_API_TOKEN: ${CIVITAI_API_TOKEN:-}
+      COLAB_ASSIGN_RETRIES: ${COLAB_ASSIGN_RETRIES:-5}
+      WORKFLOWS_DIR: /app/workflows
+      SCRIPTS_DIR: /app/scripts
+      FRONTEND_DIST_DIR: /app/frontend/dist
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    depends_on:
+      colab-canvas:
+        condition: service_healthy
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    command: tunnel --no-autoupdate run
+
+volumes:
+  colab_canvas_data:

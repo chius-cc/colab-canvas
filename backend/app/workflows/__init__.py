@@ -1,0 +1,1 @@
+"""Declarative ComfyUI workflow registry."""

@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", "Noto Sans JP", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  --color-canvas: #FAF9F6;
+  --color-surface: #FFFFFF;
+  --color-surface-subtle: #F5F3EE;
+  --color-hairline: #E7E5E0;
+  --color-hairline-strong: #D6D3CB;
+
+  --color-ink: #1C1917;
+  --color-ink-secondary: #44403C;
+  --color-ink-muted: #78716C;
+
+  --color-slate-accent: #4A6580;
+  --color-slate-accent-hover: #3D546B;
+  --color-slate-soft: #EFF3F7;
+  --color-slate-border: #CBD7E3;
+
+  --color-sakura-accent: #B87E84;
+  --color-sakura-soft: #FAF1F2;
+  --color-sakura-border: #E8D0D3;
+
+  --color-sage: #3D7A5A;
+  --color-sage-soft: #EEF6F1;
+  --color-sage-border: #C5DFD0;
+
+  --color-ochre: #9C6D2E;
+  --color-ochre-soft: #FBF5EA;
+  --color-ochre-border: #E8D7B8;
+
+  --color-vermilion: #A84442;
+  --color-vermilion-soft: #FBF0F0;
+  --color-vermilion-border: #E8C9C8;
+}
+
+@layer base {
+  html,
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  a[href],
+  select:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}

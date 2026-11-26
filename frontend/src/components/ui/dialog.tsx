@@ -14,10 +14,10 @@ export function DialogContent({
 }: React.ComponentProps<typeof DialogPrimitive.Content>) {
   return (
     <DialogPrimitive.Portal>
-      <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-[#1C1917]/40 backdrop-blur-[2px]" />
+      <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-[#1A1D24]/45 backdrop-blur-[2px]" />
       <DialogPrimitive.Content
         className={cn(
-          "fixed left-1/2 top-1/2 z-50 w-[calc(100vw-2rem)] max-w-4xl -translate-x-1/2 -translate-y-1/2 rounded-lg border border-[#E7E5E0] bg-[#FFFFFF] text-[#1C1917] shadow-[0_20px_50px_rgba(28,25,23,0.16)] focus:outline-none",
+          "fixed left-1/2 top-1/2 z-50 w-[calc(100vw-2rem)] max-w-4xl -translate-x-1/2 -translate-y-1/2 rounded-lg border border-[#E5E0D6] bg-[#FFFFFF] text-[#1A1D24] shadow-[0_20px_50px_rgba(26,29,36,0.18)] focus:outline-none",
           className
         )}
         {...props}
@@ -25,7 +25,7 @@ export function DialogContent({
         {children}
         <DialogPrimitive.Close
           aria-label="Close"
-          className="absolute right-3.5 top-3.5 rounded-md p-1.5 text-[#78716C] transition-colors hover:bg-[#F5F3EE] hover:text-[#1C1917] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#4A6580]/40"
+          className="absolute right-3.5 top-3.5 rounded-md p-1.5 text-[#62666F] transition-colors hover:bg-[#F2EFE9] hover:text-[#1A1D24]"
         >
           <X className="h-4 w-4" />
         </DialogPrimitive.Close>
@@ -40,7 +40,10 @@ export function DialogHeader({
 }: React.HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={cn("flex flex-col gap-1 border-b border-[#E7E5E0] px-5 py-4", className)}
+      className={cn(
+        "flex flex-col gap-1 border-b border-[#E5E0D6] px-5 py-4",
+        className
+      )}
       {...props}
     />
   );
@@ -52,7 +55,7 @@ export function DialogTitle({
 }: React.ComponentProps<typeof DialogPrimitive.Title>) {
   return (
     <DialogPrimitive.Title
-      className={cn("text-base font-semibold text-[#1C1917]", className)}
+      className={cn("font-display text-base font-semibold text-[#1A1D24]", className)}
       {...props}
     />
   );
@@ -64,7 +67,7 @@ export function DialogDescription({
 }: React.ComponentProps<typeof DialogPrimitive.Description>) {
   return (
     <DialogPrimitive.Description
-      className={cn("text-xs text-[#78716C]", className)}
+      className={cn("text-xs text-[#62666F]", className)}
       {...props}
     />
   );

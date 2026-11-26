@@ -1,39 +1,40 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", "Noto Sans JP", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-mono: "JetBrains Mono", "SFMono-Regular", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --font-sans: "Noto Sans SC", "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-display: "Noto Serif SC", "Songti SC", "Source Han Serif SC", Georgia, serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", ui-monospace, Menlo, Monaco, Consolas, monospace;
 
-  --color-canvas: #FAF9F6;
+  --color-canvas: #FAF8F4;
   --color-surface: #FFFFFF;
-  --color-surface-subtle: #F5F3EE;
-  --color-hairline: #E7E5E0;
-  --color-hairline-strong: #D6D3CB;
+  --color-washi: #F2EFE9;
+  --color-hairline: #E5E0D6;
+  --color-hairline-strong: #D4CEC2;
 
-  --color-ink: #1C1917;
-  --color-ink-secondary: #44403C;
-  --color-ink-muted: #78716C;
+  --color-ink: #1A1D24;
+  --color-ink-secondary: #4A4E58;
+  --color-ink-muted: #62666F;
 
-  --color-slate-accent: #4A6580;
-  --color-slate-accent-hover: #3D546B;
+  --color-seal: #C85642;
+  --color-seal-hover: #B34734;
+  --color-seal-soft: #FDF1EE;
+  --color-seal-border: #ECC5BD;
+
+  --color-slate-accent: #3E5C76;
   --color-slate-soft: #EFF3F7;
-  --color-slate-border: #CBD7E3;
+  --color-slate-border: #C8D5E1;
 
-  --color-sakura-accent: #B87E84;
-  --color-sakura-soft: #FAF1F2;
-  --color-sakura-border: #E8D0D3;
+  --color-sage: #2F6F52;
+  --color-sage-soft: #ECF5F0;
+  --color-sage-border: #BBD8C9;
 
-  --color-sage: #3D7A5A;
-  --color-sage-soft: #EEF6F1;
-  --color-sage-border: #C5DFD0;
+  --color-ochre: #8D5B1B;
+  --color-ochre-soft: #FBF4E8;
+  --color-ochre-border: #E5D0AD;
 
-  --color-ochre: #9C6D2E;
-  --color-ochre-soft: #FBF5EA;
-  --color-ochre-border: #E8D7B8;
-
-  --color-vermilion: #A84442;
-  --color-vermilion-soft: #FBF0F0;
-  --color-vermilion-border: #E8C9C8;
+  --color-vermilion: #B43B2E;
+  --color-vermilion-soft: #FDF0EE;
+  --color-vermilion-border: #EBC1BC;
 }
 
 @layer base {
@@ -46,14 +47,58 @@
     -moz-osx-font-smoothing: grayscale;
   }
 
+  ::selection {
+    background-color: rgba(200, 86, 66, 0.16);
+    color: #1A1D24;
+  }
+
+  :focus-visible {
+    outline: 2px solid rgba(200, 86, 66, 0.45);
+    outline-offset: 2px;
+  }
+
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]),
   a[href],
   select:not(:disabled) {
     cursor: pointer;
   }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #D4CEC2 transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background-color: #D4CEC2;
+    border-radius: 9999px;
+  }
+}
+
+.font-display {
+  font-family: var(--font-display);
 }
 
 .tabular-nums {
   font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

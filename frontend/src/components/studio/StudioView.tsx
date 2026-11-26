@@ -1,21 +1,29 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+} from "react";
 import {
   AlertCircle,
-  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Clock,
-  Cpu,
   Dices,
+  Download,
   ExternalLink,
   Info,
-  Layers,
   Loader2,
   Plus,
   RotateCcw,
+  SlidersHorizontal,
   Sparkles,
   Trash2,
-  Wand2,
   XCircle,
 } from "lucide-react";
+import { interpolate, useI18n } from "@/i18n";
 import { ApiError, jobsApi } from "@/lib/api";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import {
@@ -27,19 +35,13 @@ import {
   type JobStatus,
   type LoraInput,
   type LoraRecord,
-  type RemixDraft,
+  type StudioContextSnapshot,
+  type StudioDraft,
   type WorkerRecord,
   type WorkflowManifest,
 } from "@/types/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -49,9 +51,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
 import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 interface StudioViewProps {
   user: AuthUser;
@@ -60,32 +66,34 @@ interface StudioViewProps {
   jobs: JobRecord[];
   workers: WorkerRecord[];
   gpuWarning: string | null;
-  remixDraft: RemixDraft | null;
-  onConsumeRemixDraft: () => void;
+  pendingDraft: StudioDraft | null;
+  onConsumeDraft: () => void;
+  onContextChange: (ctx: StudioContextSnapshot) => void;
   onJobSubmitted: (job: JobRecord) => void;
   onJobCancelled: (job: JobRecord) => void;
   onOpenGallery: () => void;
 }
 
-function jobStatusBadge(status: JobStatus) {
-  switch (status) {
-    case "completed":
-      return <Badge variant="sage">completed</Badge>;
-    case "running":
-      return <Badge variant="slate">running</Badge>;
-    case "booting":
-      return <Badge variant="ochre">booting</Badge>;
-    case "queued":
-      return <Badge variant="neutral">queued</Badge>;
-    case "failed":
-      return <Badge variant="vermilion">failed</Badge>;
-    case "cancelled":
-      return <Badge variant="neutral">cancelled</Badge>;
-  }
-}
-
 function randomSeed32(): number {
   return Math.floor(Math.random() * 2_147_483_646) + 1;
+}
+
+function shortAspectLabel(label: string): string {
+  const m = label.match(/^(\d+:\d+)/);
+  return m ? m[1] : label;
+}
+
+function AspectGlyph({ w, h }: { w: number; h: number }) {
+  const max = Math.max(w, h);
+  const rw = Math.max(7, Math.round((w / max) * 14));
+  const rh = Math.max(7, Math.round((h / max) * 14));
+  return (
+    <span
+      aria-hidden="true"
+      className="inline-block rounded-[2px] border border-current"
+      style={{ width: `${rw}px`, height: `${rh}px` }}
+    />
+  );
 }
 
 export function StudioView({
@@ -95,12 +103,16 @@ export function StudioView({
   jobs,
   workers,
   gpuWarning,
-  remixDraft,
-  onConsumeRemixDraft,
+  pendingDraft,
+  onConsumeDraft,
+  onContextChange,
   onJobSubmitted,
   onJobCancelled,
   onOpenGallery,
 }: StudioViewProps) {
+  const { dict } = useI18n();
+  const promptRef = useRef<HTMLTextAreaElement | null>(null);
+
   const allowedGpus = useMemo(
     () => sanitizeGpuTiers(user.allowed_gpus),
     [user.allowed_gpus]
@@ -122,16 +134,14 @@ export function StudioView({
     );
   }, [workflow, user.role]);
 
-  const [variant, setVariant] = useState<string>(() => {
-    if (workflow?.default_variant) return workflow.default_variant;
-    return "turbo";
-  });
+  const [variant, setVariant] = useState<string>(
+    () => workflow?.default_variant ?? "turbo"
+  );
 
   const activeVariantSpec = useMemo(() => {
     if (!workflow) return null;
     const match = visibleVariants.find(([key]) => key === variant);
-    if (match) return match[1];
-    return visibleVariants[0]?.[1] ?? null;
+    return match ? match[1] : visibleVariants[0]?.[1] ?? null;
   }, [workflow, visibleVariants, variant]);
 
   const [prompt, setPrompt] = useState("");
@@ -148,45 +158,43 @@ export function StudioView({
   const [selectedLoras, setSelectedLoras] = useState<LoraInput[]>([]);
   const [loraToAdd, setLoraToAdd] = useState<string>("");
 
+  const [paramsOpen, setParamsOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [remixNotice, setRemixNotice] = useState<string | null>(null);
+  const [draftNotice, setDraftNotice] = useState<string | null>(null);
   const [jobScope, setJobScope] = useState<"mine" | "all">("mine");
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
-  const [initializedVariantKey, setInitializedVariantKey] = useState<string>("");
+  const [initializedKey, setInitializedKey] = useState("");
 
-  // Sync workflow selection if workflows arrive asynchronously
   useEffect(() => {
     if (!workflow && workflows.length > 0) {
       setWorkflowId(workflows[0].id);
     }
   }, [workflow, workflows]);
 
-  // Keep gpuType strictly within user's allowed GPUs
   useEffect(() => {
     if (!allowedGpus.includes(gpuType)) {
       setGpuType(allowedGpus[0] ?? "L4");
     }
   }, [allowedGpus, gpuType]);
 
-  // Initialize defaults when workflow / variant first loads (unless a Remix draft is pending)
+  // Initialize variant defaults once when workflows load
   useEffect(() => {
-    if (!workflow || remixDraft) return;
-    const effectiveVariantKey = visibleVariants.some(([k]) => k === variant)
+    if (!workflow || pendingDraft) return;
+    const validKey = visibleVariants.some(([k]) => k === variant)
       ? variant
       : workflow.default_variant in workflow.variants &&
         (user.role === "admin" || !workflow.variants[workflow.default_variant].admin_only)
       ? workflow.default_variant
       : visibleVariants[0]?.[0];
 
-    if (!effectiveVariantKey) return;
-    if (effectiveVariantKey !== variant) {
-      setVariant(effectiveVariantKey);
+    if (!validKey) return;
+    if (validKey !== variant) {
+      setVariant(validKey);
     }
-    const compoundKey = `${workflow.id}:${effectiveVariantKey}`;
-    if (initializedVariantKey === "") {
-      const defaults = workflow.variants[effectiveVariantKey].defaults;
+    if (initializedKey === "") {
+      const defaults = workflow.variants[validKey].defaults;
       setSteps(defaults.steps);
       setCfg(defaults.cfg);
       setSamplerName(defaults.sampler_name);
@@ -197,77 +205,160 @@ export function StudioView({
         setWidth(preset.width);
         setHeight(preset.height);
       }
-      setInitializedVariantKey(compoundKey);
+      setInitializedKey(`${workflow.id}:${validKey}`);
     }
-  }, [
-    workflow,
-    variant,
-    visibleVariants,
-    user.role,
-    initializedVariantKey,
-    remixDraft,
-  ]);
+  }, [workflow, variant, visibleVariants, user.role, initializedKey, pendingDraft]);
 
-  // Hydrate Remix Draft from Gallery
+  // Apply Remix or Copilot Recipe draft
   useEffect(() => {
-    if (!remixDraft || !workflow) return;
+    if (!pendingDraft || !workflow) return;
     const targetWf =
-      workflows.find((w) => w.id === remixDraft.workflow_id) ?? workflow;
+      workflows.find((w) => w.id === pendingDraft.workflow_id) ?? workflow;
     setWorkflowId(targetWf.id);
 
-    const requestedSpec = targetWf.variants[remixDraft.variant];
+    const requestedVar = pendingDraft.variant ?? targetWf.default_variant;
+    const requestedSpec = targetWf.variants[requestedVar];
     const canUseRequested =
       Boolean(requestedSpec) &&
       (user.role === "admin" || !requestedSpec.admin_only);
-    const fallbackKey =
+    const fallbackVar =
       Object.entries(targetWf.variants).find(
         ([, v]) => user.role === "admin" || !v.admin_only
       )?.[0] ?? targetWf.default_variant;
 
-    const resolvedVariant = canUseRequested ? remixDraft.variant : fallbackKey;
+    const resolvedVariant = canUseRequested ? requestedVar : fallbackVar;
+    const defaults = targetWf.variants[resolvedVariant]?.defaults;
     setVariant(resolvedVariant);
-    setInitializedVariantKey(`${targetWf.id}:${resolvedVariant}`);
+    setInitializedKey(`${targetWf.id}:${resolvedVariant}`);
 
-    setPrompt(remixDraft.prompt);
-    setNegativePrompt(remixDraft.negative_prompt);
-    setWidth(remixDraft.width);
-    setHeight(remixDraft.height);
-    setSteps(remixDraft.steps);
-    setCfg(remixDraft.cfg);
-    setSamplerName(remixDraft.sampler_name);
-    setScheduler(remixDraft.scheduler);
-    setSeedInput(String(remixDraft.seed));
-
-    const matchedLoras: LoraInput[] = [];
-    for (const item of remixDraft.loras) {
-      const found =
-        (item.id ? loras.find((l) => l.id === item.id) : undefined) ??
-        loras.find((l) => l.filename === item.filename);
-      if (found && !matchedLoras.some((m) => m.id === found.id)) {
-        matchedLoras.push({ id: found.id, strength: item.strength });
-      }
-    }
-    setSelectedLoras(matchedLoras.slice(0, targetWf.max_loras));
-
-    const upperGpu = remixDraft.gpu_type.trim().toUpperCase();
-    const matchedGpu = allowedGpus.find((g) => g === upperGpu);
-    setGpuType(matchedGpu ?? allowedGpus[0] ?? "L4");
-
-    setRemixNotice(
-      canUseRequested
-        ? `Hydrated parameters from image ${remixDraft.sourceImageId.slice(0, 8)} (seed ${remixDraft.seed}).`
-        : `Hydrated from image ${remixDraft.sourceImageId.slice(0, 8)} (variant '${remixDraft.variant}' requires admin; switched to '${resolvedVariant}').`
+    setPrompt(pendingDraft.prompt);
+    setNegativePrompt(
+      pendingDraft.negative_prompt ?? defaults?.negative_prompt ?? ""
     );
+
+    const b = targetWf.bounds;
+    if (pendingDraft.width) {
+      setWidth(
+        Math.min(b.max_dimension, Math.max(b.min_dimension, pendingDraft.width))
+      );
+    }
+    if (pendingDraft.height) {
+      setHeight(
+        Math.min(b.max_dimension, Math.max(b.min_dimension, pendingDraft.height))
+      );
+    }
+    setSteps(
+      pendingDraft.steps !== undefined
+        ? Math.min(b.max_steps, Math.max(b.min_steps, pendingDraft.steps))
+        : defaults?.steps ?? 10
+    );
+    setCfg(
+      pendingDraft.cfg !== undefined
+        ? Math.min(b.max_cfg, Math.max(b.min_cfg, pendingDraft.cfg))
+        : defaults?.cfg ?? 1.0
+    );
+    if (
+      pendingDraft.sampler_name &&
+      b.allowed_samplers.includes(pendingDraft.sampler_name)
+    ) {
+      setSamplerName(pendingDraft.sampler_name);
+    } else if (defaults) {
+      setSamplerName(defaults.sampler_name);
+    }
+    if (
+      pendingDraft.scheduler &&
+      b.allowed_schedulers.includes(pendingDraft.scheduler)
+    ) {
+      setScheduler(pendingDraft.scheduler);
+    } else if (defaults) {
+      setScheduler(defaults.scheduler);
+    }
+    if (pendingDraft.seed !== undefined && pendingDraft.seed !== null) {
+      setSeedInput(String(pendingDraft.seed));
+    }
+
+    if (pendingDraft.loras) {
+      const matched: LoraInput[] = [];
+      for (const item of pendingDraft.loras) {
+        const found =
+          (item.id ? loras.find((l) => l.id === item.id) : undefined) ??
+          (item.filename
+            ? loras.find((l) => l.filename === item.filename)
+            : undefined);
+        if (found && !matched.some((m) => m.id === found.id)) {
+          matched.push({ id: found.id, strength: item.strength });
+        }
+      }
+      setSelectedLoras(matched.slice(0, targetWf.max_loras));
+    }
+
+    if (pendingDraft.gpu_type) {
+      const upper = pendingDraft.gpu_type.trim().toUpperCase();
+      const matchedGpu = allowedGpus.find((g) => g === upper);
+      if (matchedGpu) setGpuType(matchedGpu);
+    }
+
+    if (pendingDraft.sourceLabel) {
+      setDraftNotice(
+        canUseRequested
+          ? interpolate(dict.studio.remixLoaded, {
+              id: pendingDraft.sourceLabel,
+              seed: pendingDraft.seed ?? "auto",
+            })
+          : interpolate(dict.studio.remixFallback, {
+              id: pendingDraft.sourceLabel,
+              variant: requestedVar,
+              fallback: resolvedVariant,
+            })
+      );
+    }
+
     setSubmitError(null);
-    onConsumeRemixDraft();
+    onConsumeDraft();
   }, [
-    remixDraft,
+    pendingDraft,
     workflow,
     workflows,
     loras,
     user.role,
     allowedGpus,
-    onConsumeRemixDraft,
+    dict.studio.remixLoaded,
+    dict.studio.remixFallback,
+    onConsumeDraft,
+  ]);
+
+  // Publish live studio context to App for Floating Copilot quick chips
+  useEffect(() => {
+    onContextChange({
+      workflow_id: workflow?.id ?? "anima",
+      variant,
+      prompt,
+      negative_prompt: negativePrompt,
+      width,
+      height,
+      steps,
+      cfg,
+      sampler_name: samplerName,
+      scheduler,
+      batch_size: batchSize,
+      gpu_type: gpuType,
+      loras: selectedLoras,
+    });
+  }, [
+    workflow?.id,
+    variant,
+    prompt,
+    negativePrompt,
+    width,
+    height,
+    steps,
+    cfg,
+    samplerName,
+    scheduler,
+    batchSize,
+    gpuType,
+    selectedLoras,
+    onContextChange,
   ]);
 
   const handleVariantChange = (nextVariant: string) => {
@@ -280,7 +371,7 @@ export function StudioView({
     setSamplerName(spec.defaults.sampler_name);
     setScheduler(spec.defaults.scheduler);
     setNegativePrompt(spec.defaults.negative_prompt);
-    setInitializedVariantKey(`${workflow.id}:${nextVariant}`);
+    setInitializedKey(`${workflow.id}:${nextVariant}`);
   };
 
   const handleAddLora = (loraId: string) => {
@@ -316,23 +407,19 @@ export function StudioView({
     });
   };
 
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
+  const submitGeneration = async () => {
     setSubmitError(null);
-    if (!workflow) {
-      setSubmitError("No workflow manifest loaded.");
-      return;
-    }
+    if (!workflow) return;
     const cleanPrompt = prompt.trim();
     if (!cleanPrompt) {
-      setSubmitError("Please enter a prompt before generating.");
+      setSubmitError(dict.studio.errNoPrompt);
       return;
     }
     let parsedSeed: number | null = null;
     if (seedInput.trim() !== "") {
       const n = Number(seedInput.trim());
       if (!Number.isInteger(n) || n < 0 || n > 4_294_967_295) {
-        setSubmitError("Seed must be an integer between 0 and 4294967295.");
+        setSubmitError(dict.studio.errBadSeed);
         return;
       }
       parsedSeed = n;
@@ -359,11 +446,21 @@ export function StudioView({
       onJobSubmitted(res.job);
       setSelectedJobId(res.job.id);
     } catch (err) {
-      setSubmitError(
-        err instanceof ApiError ? err.detail : "Failed to submit job."
-      );
+      setSubmitError(err instanceof ApiError ? err.detail : "Submit failed");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    void submitGeneration();
+  };
+
+  const handlePromptKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      e.preventDefault();
+      void submitGeneration();
     }
   };
 
@@ -373,9 +470,7 @@ export function StudioView({
       const res = await jobsApi.cancel(jobId);
       onJobCancelled(res.job);
     } catch (err) {
-      setSubmitError(
-        err instanceof ApiError ? err.detail : "Could not cancel job."
-      );
+      setSubmitError(err instanceof ApiError ? err.detail : "Cancel failed");
     } finally {
       setCancellingId(null);
     }
@@ -409,11 +504,16 @@ export function StudioView({
     const mineActive = jobs.find(
       (j) =>
         j.user_id === user.id &&
-        (j.status === "running" || j.status === "booting" || j.status === "queued")
+        (j.status === "running" ||
+          j.status === "booting" ||
+          j.status === "queued")
     );
     if (mineActive) return mineActive;
     const mineCompleted = jobs.find(
-      (j) => j.user_id === user.id && j.status === "completed" && j.image_ids.length > 0
+      (j) =>
+        j.user_id === user.id &&
+        j.status === "completed" &&
+        j.image_ids.length > 0
     );
     return mineCompleted ?? jobs[0] ?? null;
   }, [jobs, selectedJobId, user.id]);
@@ -445,217 +545,245 @@ export function StudioView({
     }
   }, [focusedJob, activeManagedWorker]);
 
+  const statusBadge = (status: JobStatus) => {
+    const label = dict.studio.status[status];
+    switch (status) {
+      case "completed":
+        return <Badge variant="sage">{label}</Badge>;
+      case "running":
+        return <Badge variant="slate">{label}</Badge>;
+      case "booting":
+        return <Badge variant="ochre">{label}</Badge>;
+      case "failed":
+        return <Badge variant="vermilion">{label}</Badge>;
+      default:
+        return <Badge variant="neutral">{label}</Badge>;
+    }
+  };
+
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 items-start">
-      {/* Left: Generation Composer */}
-      <form onSubmit={handleSubmit} className="space-y-4 lg:col-span-5">
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between gap-2">
-              <div>
-                <CardTitle className="flex items-center gap-2">
-                  <Wand2 className="h-4 w-4 text-[#4A6580]" />
-                  Studio Composer
-                </CardTitle>
-                <CardDescription>
-                  Configure workflow, prompts, LoRAs, and sampling parameters.
-                </CardDescription>
-              </div>
-              {workflow && (
-                <Badge variant="neutral" className="font-mono text-[10px]">
-                  {workflow.name}
-                </Badge>
-              )}
+      {/* Left Dock: Prompt + Collapsible Parameters + Compact Queue */}
+      <div className="space-y-4 lg:col-span-5">
+        <form
+          onSubmit={handleSubmit}
+          className="rounded-lg border border-[#E5E0D6] bg-[#FFFFFF] p-4 space-y-4"
+        >
+          {draftNotice && (
+            <div className="flex items-start justify-between gap-2 rounded-md border border-[#C8D5E1] bg-[#EFF3F7] px-3 py-2 text-xs text-[#3E5C76]">
+              <span>{draftNotice}</span>
+              <button
+                type="button"
+                onClick={() => setDraftNotice(null)}
+                className="underline shrink-0"
+              >
+                {dict.app.dismiss}
+              </button>
             </div>
-          </CardHeader>
+          )}
 
-          <CardContent className="space-y-4">
-            {remixNotice && (
-              <div className="flex items-start justify-between gap-2 rounded-md border border-[#CBD7E3] bg-[#EFF3F7] px-3 py-2 text-xs text-[#3D546B]">
-                <span className="flex items-start gap-1.5">
-                  <Sparkles className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                  <span>{remixNotice}</span>
-                </span>
+          {submitError && (
+            <div
+              role="alert"
+              className="flex items-start gap-2 rounded-md border border-[#EBC1BC] bg-[#FDF0EE] px-3 py-2 text-xs text-[#B43B2E]"
+            >
+              <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+              <span>{submitError}</span>
+            </div>
+          )}
+
+          {/* Prompt Textarea */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                <Label htmlFor="studio-prompt" className="text-[#1A1D24]">
+                  {workflow?.name ?? "Anima"}
+                </Label>
+                {workflow?.prompt_hint && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label="Prompting hint"
+                        className="text-[#62666F] hover:text-[#1A1D24]"
+                      >
+                        <Info className="h-3.5 w-3.5" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>{workflow.prompt_hint}</TooltipContent>
+                  </Tooltip>
+                )}
+              </div>
+              {activeVariantSpec?.defaults.positive_prefix && (
                 <button
                   type="button"
-                  onClick={() => setRemixNotice(null)}
-                  className="text-[11px] underline underline-offset-2 shrink-0"
+                  onClick={handleInsertPrefix}
+                  className="text-[11px] font-medium text-[#3E5C76] hover:underline"
                 >
-                  Dismiss
+                  {dict.studio.addQualityPrefix}
                 </button>
-              </div>
-            )}
-
-            {submitError && (
-              <div
-                role="alert"
-                className="flex items-start gap-2 rounded-md border border-[#E8C9C8] bg-[#FBF0F0] px-3 py-2 text-xs text-[#A84442]"
-              >
-                <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
-                <span>{submitError}</span>
-              </div>
-            )}
-
-            {workflows.length > 1 && (
-              <div className="space-y-1.5">
-                <Label>Workflow</Label>
-                <Select value={workflowId} onValueChange={setWorkflowId}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select workflow" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {workflows.map((wf) => (
-                      <SelectItem key={wf.id} value={wf.id}>
-                        {wf.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-
-            {/* Variant Picker */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label>Model Variant</Label>
-                {activeVariantSpec && (
-                  <span className="font-mono text-[10px] text-[#78716C]">
-                    {activeVariantSpec.weight.target_path.split("/").pop()}
-                  </span>
-                )}
-              </div>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {visibleVariants.map(([key, spec]) => {
-                  const active = variant === key;
-                  return (
-                    <button
-                      key={key}
-                      type="button"
-                      onClick={() => handleVariantChange(key)}
-                      className={cn(
-                        "rounded-md border p-2.5 text-left transition-all",
-                        active
-                          ? "border-[#4A6580] bg-[#EFF3F7]/70 ring-1 ring-[#4A6580]/30"
-                          : "border-[#E7E5E0] bg-[#FFFFFF] hover:border-[#D6D3CB] hover:bg-[#FAF9F6]"
-                      )}
-                    >
-                      <div className="flex items-center justify-between gap-1.5">
-                        <span className="text-xs font-semibold text-[#1C1917]">
-                          {spec.label}
-                        </span>
-                        {spec.admin_only && (
-                          <Badge variant="sakura" className="text-[9px] px-1.5 py-0">
-                            admin
-                          </Badge>
-                        )}
-                      </div>
-                      <p className="mt-1 text-[11px] leading-snug text-[#78716C] line-clamp-2">
-                        {spec.description}
-                      </p>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Prompt & Anima Hint */}
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <Label htmlFor="studio-prompt">Positive Prompt</Label>
-                {activeVariantSpec?.defaults.positive_prefix && (
-                  <button
-                    type="button"
-                    onClick={handleInsertPrefix}
-                    className="text-[11px] font-medium text-[#4A6580] hover:text-[#3D546B] underline underline-offset-2"
-                  >
-                    + Quality prefix
-                  </button>
-                )}
-              </div>
-              <Textarea
-                id="studio-prompt"
-                rows={4}
-                placeholder="1girl, quiet Kyoto bookshop interior, morning sunlight filtering through paper shoji, warm wooden shelves, soft ink illustration"
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                className="leading-relaxed"
-              />
-              {workflow?.prompt_hint && (
-                <p className="flex items-start gap-1.5 rounded-md border border-[#E7E5E0] bg-[#FAF9F6] px-2.5 py-1.5 text-[11px] text-[#78716C]">
-                  <Info className="h-3.5 w-3.5 shrink-0 mt-0.5 text-[#4A6580]" />
-                  <span>{workflow.prompt_hint}</span>
-                </p>
               )}
             </div>
 
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <Label htmlFor="studio-negative">Negative Prompt</Label>
-                {activeVariantSpec?.defaults.negative_prompt && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setNegativePrompt(
-                        activeVariantSpec.defaults.negative_prompt
-                      )
-                    }
-                    className="inline-flex items-center gap-1 text-[11px] text-[#78716C] hover:text-[#1C1917]"
-                  >
-                    <RotateCcw className="h-3 w-3" />
-                    Reset default
-                  </button>
-                )}
-              </div>
-              <Textarea
-                id="studio-negative"
-                rows={2}
-                placeholder="Optional negative terms..."
-                value={negativePrompt}
-                onChange={(e) => setNegativePrompt(e.target.value)}
-                className="min-h-[60px] text-xs"
-              />
+            <Textarea
+              ref={promptRef}
+              id="studio-prompt"
+              rows={4}
+              placeholder={dict.studio.promptPlaceholder}
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              onKeyDown={handlePromptKeyDown}
+              className="leading-relaxed bg-[#FAF8F4]/50"
+            />
+          </div>
+
+          {/* Inline Variant Pills */}
+          <div className="space-y-1.5">
+            <Label>{dict.studio.variantLabel}</Label>
+            <div className="flex flex-wrap gap-1.5">
+              {visibleVariants.map(([key, spec]) => {
+                const active = variant === key;
+                return (
+                  <Tooltip key={key}>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={() => handleVariantChange(key)}
+                        className={cn(
+                          "inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors",
+                          active
+                            ? "border-[#1A1D24] bg-[#1A1D24] text-white"
+                            : "border-[#E5E0D6] bg-[#FAF8F4] text-[#4A4E58] hover:border-[#D4CEC2] hover:text-[#1A1D24]"
+                        )}
+                      >
+                        <span>{spec.label}</span>
+                        {spec.admin_only && (
+                          <span
+                            className={cn(
+                              "rounded px-1 text-[9px]",
+                              active
+                                ? "bg-white/20 text-white"
+                                : "bg-[#FDF1EE] text-[#C85642]"
+                            )}
+                          >
+                            admin
+                          </span>
+                        )}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>{spec.description}</TooltipContent>
+                  </Tooltip>
+                );
+              })}
             </div>
+          </div>
 
-            <Separator />
-
-            {/* Resolution Presets */}
-            <div className="space-y-2">
+          {/* Visual Aspect Ratio Pills */}
+          {workflow && (
+            <div className="space-y-1.5">
               <div className="flex items-center justify-between">
-                <Label>Canvas Aspect &amp; Dimensions</Label>
-                <span className="font-mono text-[11px] text-[#78716C] tabular-nums">
-                  {width} × {height}
+                <Label>{dict.studio.aspectLabel}</Label>
+                <span className="font-mono text-[11px] text-[#62666F] tabular-nums">
+                  {width}×{height}
                 </span>
               </div>
-              {workflow && (
-                <>
-                  <div className="flex flex-wrap gap-1.5">
-                    {workflow.resolution_presets.map((preset) => {
-                      const active =
-                        width === preset.width && height === preset.height;
-                      return (
+              <div className="flex flex-wrap gap-1.5">
+                {workflow.resolution_presets.map((preset) => {
+                  const active =
+                    width === preset.width && height === preset.height;
+                  return (
+                    <Tooltip key={preset.id}>
+                      <TooltipTrigger asChild>
                         <button
-                          key={preset.id}
                           type="button"
                           onClick={() => {
                             setWidth(preset.width);
                             setHeight(preset.height);
                           }}
                           className={cn(
-                            "rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors tabular-nums",
+                            "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 font-mono text-xs transition-colors tabular-nums",
                             active
-                              ? "border-[#4A6580] bg-[#EFF3F7] text-[#3D546B]"
-                              : "border-[#E7E5E0] bg-[#FFFFFF] text-[#44403C] hover:bg-[#FAF9F6]"
+                              ? "border-[#C85642] bg-[#FDF1EE] text-[#C85642] font-medium"
+                              : "border-[#E5E0D6] bg-[#FFFFFF] text-[#4A4E58] hover:bg-[#FAF8F4]"
                           )}
                         >
-                          {preset.label}
+                          <AspectGlyph w={preset.width} h={preset.height} />
+                          <span>{shortAspectLabel(preset.label)}</span>
                         </button>
-                      );
-                    })}
+                      </TooltipTrigger>
+                      <TooltipContent>{preset.label}</TooltipContent>
+                    </Tooltip>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Collapsible Progressive Disclosure: Fine Parameters */}
+          {workflow && (
+            <div className="rounded-md border border-[#E5E0D6] bg-[#FAF8F4]">
+              <button
+                type="button"
+                aria-expanded={paramsOpen}
+                onClick={() => setParamsOpen((o) => !o)}
+                className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs font-medium text-[#1A1D24] hover:bg-[#F2EFE9]/70 transition-colors rounded-md"
+              >
+                <span className="flex items-center gap-1.5">
+                  <SlidersHorizontal className="h-3.5 w-3.5 text-[#62666F]" />
+                  <span>{dict.studio.parametersBtn}</span>
+                </span>
+                <span className="flex items-center gap-1.5 font-mono text-[11px] text-[#62666F] tabular-nums">
+                  <span>
+                    {steps}s · CFG {cfg.toFixed(1)} · {gpuType}
+                    {selectedLoras.length > 0
+                      ? ` · ${selectedLoras.length} LoRA`
+                      : ""}
+                  </span>
+                  {paramsOpen ? (
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  ) : (
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  )}
+                </span>
+              </button>
+
+              {paramsOpen && (
+                <div className="border-t border-[#E5E0D6] p-3 space-y-3.5 bg-[#F2EFE9]/45">
+                  {/* Negative Prompt */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="studio-negative">
+                        {dict.studio.negativePrompt}
+                      </Label>
+                      {activeVariantSpec?.defaults.negative_prompt && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setNegativePrompt(
+                              activeVariantSpec.defaults.negative_prompt
+                            )
+                          }
+                          className="inline-flex items-center gap-1 text-[11px] text-[#62666F] hover:text-[#1A1D24]"
+                        >
+                          <RotateCcw className="h-3 w-3" />
+                          {dict.studio.resetDefault}
+                        </button>
+                      )}
+                    </div>
+                    <Textarea
+                      id="studio-negative"
+                      rows={2}
+                      value={negativePrompt}
+                      onChange={(e) => setNegativePrompt(e.target.value)}
+                      className="min-h-[56px] text-xs"
+                    />
                   </div>
-                  <div className="grid grid-cols-2 gap-3 pt-1">
+
+                  {/* Custom Dimensions */}
+                  <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <Label htmlFor="studio-width" className="text-[11px] text-[#78716C]">
-                        Width ({workflow.bounds.min_dimension}–{workflow.bounds.max_dimension})
+                      <Label htmlFor="studio-width" className="text-[11px]">
+                        {dict.studio.width}
                       </Label>
                       <Input
                         id="studio-width"
@@ -665,14 +793,17 @@ export function StudioView({
                         step={workflow.bounds.dimension_step}
                         value={width}
                         onChange={(e) =>
-                          setWidth(Number(e.target.value) || workflow.bounds.min_dimension)
+                          setWidth(
+                            Number(e.target.value) ||
+                              workflow.bounds.min_dimension
+                          )
                         }
                         className="h-8 font-mono text-xs tabular-nums"
                       />
                     </div>
                     <div className="space-y-1">
-                      <Label htmlFor="studio-height" className="text-[11px] text-[#78716C]">
-                        Height ({workflow.bounds.min_dimension}–{workflow.bounds.max_dimension})
+                      <Label htmlFor="studio-height" className="text-[11px]">
+                        {dict.studio.height}
                       </Label>
                       <Input
                         id="studio-height"
@@ -682,472 +813,543 @@ export function StudioView({
                         step={workflow.bounds.dimension_step}
                         value={height}
                         onChange={(e) =>
-                          setHeight(Number(e.target.value) || workflow.bounds.min_dimension)
+                          setHeight(
+                            Number(e.target.value) ||
+                              workflow.bounds.min_dimension
+                          )
                         }
                         className="h-8 font-mono text-xs tabular-nums"
                       />
                     </div>
                   </div>
-                </>
-              )}
-            </div>
 
-            {/* Sampling & Seed */}
-            {workflow && (
-              <div className="space-y-3 pt-1">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <Label>Steps</Label>
-                      <span className="font-mono text-xs text-[#1C1917] tabular-nums">
-                        {steps}
-                      </span>
-                    </div>
-                    <Slider
-                      min={workflow.bounds.min_steps}
-                      max={workflow.bounds.max_steps}
-                      step={1}
-                      value={[steps]}
-                      onValueChange={([v]) => setSteps(v)}
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <Label>CFG Scale</Label>
-                      <span className="font-mono text-xs text-[#1C1917] tabular-nums">
-                        {cfg.toFixed(1)}
-                      </span>
-                    </div>
-                    <Slider
-                      min={workflow.bounds.min_cfg}
-                      max={workflow.bounds.max_cfg}
-                      step={0.5}
-                      value={[cfg]}
-                      onValueChange={([v]) => setCfg(v)}
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1">
-                    <Label>Sampler</Label>
-                    <Select value={samplerName} onValueChange={setSamplerName}>
-                      <SelectTrigger className="h-8 text-xs">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {workflow.bounds.allowed_samplers.map((s) => (
-                          <SelectItem key={s} value={s}>
-                            {s}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-1">
-                    <Label>Scheduler</Label>
-                    <Select value={scheduler} onValueChange={setScheduler}>
-                      <SelectTrigger className="h-8 text-xs">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {workflow.bounds.allowed_schedulers.map((s) => (
-                          <SelectItem key={s} value={s}>
-                            {s}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
-                  <div className="space-y-1 sm:col-span-7">
-                    <Label htmlFor="studio-seed">Seed (blank = random)</Label>
-                    <div className="flex gap-1.5">
-                      <Input
-                        id="studio-seed"
-                        type="number"
-                        min={0}
-                        max={4294967295}
-                        placeholder="Random"
-                        value={seedInput}
-                        onChange={(e) => setSeedInput(e.target.value)}
-                        className="h-8 font-mono text-xs tabular-nums"
+                  {/* Steps & CFG */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-[11px]">{dict.studio.steps}</Label>
+                        <span className="font-mono text-xs tabular-nums">
+                          {steps}
+                        </span>
+                      </div>
+                      <Slider
+                        min={workflow.bounds.min_steps}
+                        max={workflow.bounds.max_steps}
+                        step={1}
+                        value={[steps]}
+                        onValueChange={([v]) => setSteps(v)}
                       />
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="icon"
-                        title="Generate random seed"
-                        aria-label="Randomize seed"
-                        onClick={() => setSeedInput(String(randomSeed32()))}
-                      >
-                        <Dices className="h-3.5 w-3.5" />
-                      </Button>
-                      {seedInput !== "" && (
+                    </div>
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-[11px]">{dict.studio.cfg}</Label>
+                        <span className="font-mono text-xs tabular-nums">
+                          {cfg.toFixed(1)}
+                        </span>
+                      </div>
+                      <Slider
+                        min={workflow.bounds.min_cfg}
+                        max={workflow.bounds.max_cfg}
+                        step={0.5}
+                        value={[cfg]}
+                        onValueChange={([v]) => setCfg(v)}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Sampler & Scheduler */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <Label className="text-[11px]">{dict.studio.sampler}</Label>
+                      <Select value={samplerName} onValueChange={setSamplerName}>
+                        <SelectTrigger className="h-8 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {workflow.bounds.allowed_samplers.map((s) => (
+                            <SelectItem key={s} value={s}>
+                              {s}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-[11px]">{dict.studio.scheduler}</Label>
+                      <Select value={scheduler} onValueChange={setScheduler}>
+                        <SelectTrigger className="h-8 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {workflow.bounds.allowed_schedulers.map((s) => (
+                            <SelectItem key={s} value={s}>
+                              {s}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  {/* Seed & Batch */}
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
+                    <div className="space-y-1 sm:col-span-7">
+                      <Label htmlFor="studio-seed" className="text-[11px]">
+                        {dict.studio.seed}
+                      </Label>
+                      <div className="flex gap-1.5">
+                        <Input
+                          id="studio-seed"
+                          type="number"
+                          min={0}
+                          max={4294967295}
+                          placeholder={dict.studio.seedRandomPlaceholder}
+                          value={seedInput}
+                          onChange={(e) => setSeedInput(e.target.value)}
+                          className="h-8 font-mono text-xs tabular-nums"
+                        />
                         <Button
                           type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setSeedInput("")}
-                          className="h-8 px-2 text-[11px]"
+                          variant="outline"
+                          size="icon"
+                          aria-label="Randomize seed"
+                          onClick={() => setSeedInput(String(randomSeed32()))}
                         >
-                          Auto
+                          <Dices className="h-3.5 w-3.5" />
                         </Button>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="space-y-1 sm:col-span-5">
-                    <Label>Batch Size</Label>
-                    <div className="grid grid-cols-4 gap-1">
-                      {Array.from(
-                        { length: workflow.bounds.max_batch_size },
-                        (_, idx) => idx + 1
-                      ).map((n) => {
-                        const exceeds = n > remainingQuota;
-                        return (
-                          <button
-                            key={n}
+                        {seedInput !== "" && (
+                          <Button
                             type="button"
-                            disabled={exceeds}
-                            onClick={() => setBatchSize(n)}
-                            className={cn(
-                              "h-8 rounded-md border font-mono text-xs font-medium transition-colors tabular-nums",
-                              batchSize === n
-                                ? "border-[#4A6580] bg-[#EFF3F7] text-[#3D546B]"
-                                : "border-[#E7E5E0] bg-[#FFFFFF] text-[#44403C] hover:bg-[#FAF9F6]",
-                              exceeds && "opacity-40 cursor-not-allowed"
-                            )}
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setSeedInput("")}
+                            className="h-8 px-2 text-[11px]"
                           >
-                            {n}
-                          </button>
-                        );
-                      })}
+                            {dict.studio.seedAuto}
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="space-y-1 sm:col-span-5">
+                      <Label className="text-[11px]">{dict.studio.batchSize}</Label>
+                      <div className="grid grid-cols-4 gap-1">
+                        {Array.from(
+                          { length: workflow.bounds.max_batch_size },
+                          (_, idx) => idx + 1
+                        ).map((n) => {
+                          const exceeds = n > remainingQuota;
+                          return (
+                            <button
+                              key={n}
+                              type="button"
+                              disabled={exceeds}
+                              onClick={() => setBatchSize(n)}
+                              className={cn(
+                                "h-8 rounded-md border font-mono text-xs font-medium transition-colors tabular-nums",
+                                batchSize === n
+                                  ? "border-[#1A1D24] bg-[#1A1D24] text-white"
+                                  : "border-[#E5E0D6] bg-[#FFFFFF] text-[#4A4E58] hover:bg-[#FAF8F4]",
+                                exceeds && "opacity-40 cursor-not-allowed"
+                              )}
+                            >
+                              {n}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
                   </div>
-                </div>
-              </div>
-            )}
 
-            <Separator />
+                  {/* LoRAs */}
+                  {workflow.supports_loras && (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-[11px]">
+                          {dict.studio.loras} ({selectedLoras.length}/
+                          {workflow.max_loras})
+                        </Label>
+                        {loras.length === 0 && (
+                          <span className="text-[11px] text-[#62666F]">
+                            {dict.studio.loraEmpty}
+                          </span>
+                        )}
+                      </div>
 
-            {/* LoRA Picker */}
-            {workflow?.supports_loras && (
-              <div className="space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <Label className="flex items-center gap-1.5">
-                    <Layers className="h-3.5 w-3.5 text-[#78716C]" />
-                    LoRAs ({selectedLoras.length}/{workflow.max_loras})
-                  </Label>
-                  {loras.length === 0 && (
-                    <span className="text-[11px] text-[#78716C]">
-                      None registered yet
-                    </span>
-                  )}
-                </div>
+                      {loras.length > 0 &&
+                        selectedLoras.length < workflow.max_loras && (
+                          <Select
+                            value={loraToAdd}
+                            onValueChange={handleAddLora}
+                          >
+                            <SelectTrigger className="h-8 text-xs">
+                              <SelectValue
+                                placeholder={dict.studio.loraAddPlaceholder}
+                              />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {availableLorasToAdd.map((l) => (
+                                <SelectItem key={l.id} value={l.id}>
+                                  {l.name} ({l.source_type})
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        )}
 
-                {loras.length > 0 && selectedLoras.length < workflow.max_loras && (
-                  <div className="flex gap-2">
-                    <Select value={loraToAdd} onValueChange={handleAddLora}>
-                      <SelectTrigger className="h-8 text-xs">
-                        <SelectValue placeholder="Add registered LoRA..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {availableLorasToAdd.map((l) => (
-                          <SelectItem key={l.id} value={l.id}>
-                            {l.name} ({l.source_type})
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
-
-                {selectedLoras.length > 0 && (
-                  <div className="space-y-2">
-                    {selectedLoras.map((sel) => {
-                      const meta = loras.find((l) => l.id === sel.id);
-                      if (!meta) return null;
-                      return (
-                        <div
-                          key={sel.id}
-                          className="rounded-md border border-[#E7E5E0] bg-[#FAF9F6] p-2.5 space-y-2"
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="min-w-0">
-                              <div className="truncate text-xs font-medium text-[#1C1917]">
+                      {selectedLoras.map((sel) => {
+                        const meta = loras.find((l) => l.id === sel.id);
+                        if (!meta) return null;
+                        return (
+                          <div
+                            key={sel.id}
+                            className="rounded-md border border-[#E5E0D6] bg-[#FFFFFF] p-2.5 space-y-1.5"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="truncate text-xs font-medium text-[#1A1D24]">
                                 {meta.name}
-                              </div>
-                              <div className="truncate font-mono text-[10px] text-[#78716C]">
-                                {meta.filename}
+                              </span>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <span className="font-mono text-xs tabular-nums">
+                                  {sel.strength.toFixed(2)}
+                                </span>
+                                <button
+                                  type="button"
+                                  aria-label={`Remove ${meta.name}`}
+                                  onClick={() =>
+                                    setSelectedLoras((prev) =>
+                                      prev.filter((item) => item.id !== sel.id)
+                                    )
+                                  }
+                                  className="text-[#62666F] hover:text-[#B43B2E]"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
                               </div>
                             </div>
-                            <div className="flex items-center gap-2 shrink-0">
-                              <span className="font-mono text-xs text-[#1C1917] tabular-nums">
-                                {sel.strength.toFixed(2)}
-                              </span>
-                              <button
-                                type="button"
-                                aria-label={`Remove ${meta.name}`}
-                                onClick={() =>
-                                  setSelectedLoras((prev) =>
-                                    prev.filter((item) => item.id !== sel.id)
+                            <Slider
+                              min={-2.0}
+                              max={2.0}
+                              step={0.05}
+                              value={[sel.strength]}
+                              onValueChange={([v]) =>
+                                setSelectedLoras((prev) =>
+                                  prev.map((item) =>
+                                    item.id === sel.id
+                                      ? { ...item, strength: v }
+                                      : item
                                   )
-                                }
-                                className="rounded p-1 text-[#78716C] hover:bg-[#E7E5E0]/60 hover:text-[#A84442]"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
-                            </div>
-                          </div>
-                          <Slider
-                            min={-2.0}
-                            max={2.0}
-                            step={0.05}
-                            value={[sel.strength]}
-                            onValueChange={([v]) =>
-                              setSelectedLoras((prev) =>
-                                prev.map((item) =>
-                                  item.id === sel.id
-                                    ? { ...item, strength: v }
-                                    : item
                                 )
-                              )
-                            }
-                          />
-                          {meta.trigger_words && (
-                            <div className="flex items-center justify-between gap-2 pt-0.5">
-                              <span className="truncate text-[10px] text-[#78716C]">
-                                Triggers: <span className="font-mono">{meta.trigger_words}</span>
-                              </span>
+                              }
+                            />
+                            {meta.trigger_words && (
                               <button
                                 type="button"
                                 onClick={() =>
                                   handleAppendTrigger(meta.trigger_words)
                                 }
-                                className="inline-flex items-center gap-0.5 text-[10px] font-medium text-[#4A6580] hover:underline shrink-0"
+                                className="inline-flex items-center gap-1 text-[10px] font-medium text-[#3E5C76] hover:underline"
                               >
                                 <Plus className="h-2.5 w-2.5" />
-                                Insert
+                                {dict.studio.loraInsertTriggers}:{" "}
+                                {meta.trigger_words}
                               </button>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
 
-            {/* GPU Tier Selector — strictly allowed BF16 Colab accelerators */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label className="flex items-center gap-1.5">
-                  <Cpu className="h-3.5 w-3.5 text-[#78716C]" />
-                  Colab GPU Tier
-                </Label>
-                <span className="text-[11px] text-[#78716C]">
-                  BF16 accelerators only
-                </span>
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                {allowedGpus.map((tier) => {
-                  const meta = GPU_TIER_META[tier];
-                  const active = gpuType === tier;
-                  return (
+                  {/* GPU Tier Selector (Strictly allowed BF16 Colab accelerators) */}
+                  <div className="space-y-1.5">
+                    <Label className="text-[11px]">{dict.studio.gpuTier}</Label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {allowedGpus.map((tier) => {
+                        const meta = GPU_TIER_META[tier];
+                        const active = gpuType === tier;
+                        return (
+                          <Tooltip key={tier}>
+                            <TooltipTrigger asChild>
+                              <button
+                                type="button"
+                                onClick={() => setGpuType(tier)}
+                                className={cn(
+                                  "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 font-mono text-xs transition-colors",
+                                  active
+                                    ? "border-[#1A1D24] bg-[#1A1D24] text-white"
+                                    : "border-[#E5E0D6] bg-[#FFFFFF] text-[#4A4E58] hover:bg-[#FAF8F4]"
+                                )}
+                              >
+                                <span className="font-semibold">{tier}</span>
+                                <span className="text-[10px] opacity-75">
+                                  {meta.vram}
+                                </span>
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {dict.studio.gpuNotes[tier]}
+                            </TooltipContent>
+                          </Tooltip>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Primary Vermilion Seal CTA */}
+          <Button
+            type="submit"
+            disabled={
+              submitting || queueFull || remainingQuota < batchSize || !workflow
+            }
+            className="w-full h-10 text-sm font-medium"
+          >
+            {submitting ? (
+              <>
+                <Loader2 className="animate-spin" />
+                {dict.studio.submittingBtn}
+              </>
+            ) : queueFull ? (
+              interpolate(dict.studio.queueFullBtn, {
+                active: user.active_queued,
+                max: user.max_queued,
+              })
+            ) : remainingQuota < batchSize ? (
+              interpolate(dict.studio.quotaLowBtn, {
+                left: remainingQuota,
+              })
+            ) : (
+              <>
+                <Sparkles />
+                {batchSize > 1
+                  ? interpolate(dict.studio.generateBatchBtn, {
+                      count: batchSize,
+                    })
+                  : dict.studio.generateBtn}
+              </>
+            )}
+          </Button>
+        </form>
+
+        {/* Compact Queue Strip */}
+        <div className="rounded-lg border border-[#E5E0D6] bg-[#FFFFFF]">
+          <div className="flex items-center justify-between border-b border-[#E5E0D6] px-4 py-2.5">
+            <span className="text-xs font-semibold text-[#1A1D24]">
+              {dict.studio.queueTitle}
+            </span>
+            <div className="flex items-center gap-1 rounded-full border border-[#E5E0D6] bg-[#F2EFE9] p-0.5 text-[11px]">
+              <button
+                type="button"
+                onClick={() => setJobScope("mine")}
+                className={cn(
+                  "rounded-full px-2.5 py-0.5 font-medium transition-colors",
+                  jobScope === "mine"
+                    ? "bg-[#FFFFFF] text-[#1A1D24]"
+                    : "text-[#62666F] hover:text-[#1A1D24]"
+                )}
+              >
+                {dict.studio.queueMine}
+              </button>
+              <button
+                type="button"
+                onClick={() => setJobScope("all")}
+                className={cn(
+                  "rounded-full px-2.5 py-0.5 font-medium transition-colors tabular-nums",
+                  jobScope === "all"
+                    ? "bg-[#FFFFFF] text-[#1A1D24]"
+                    : "text-[#62666F] hover:text-[#1A1D24]"
+                )}
+              >
+                {dict.studio.queueAll} ({jobs.length})
+              </button>
+            </div>
+          </div>
+
+          {visibleJobs.length === 0 ? (
+            <div className="px-4 py-6 text-center text-xs text-[#62666F]">
+              {dict.studio.queueEmpty}
+            </div>
+          ) : (
+            <ul className="divide-y divide-[#E5E0D6] max-h-[300px] overflow-y-auto">
+              {visibleJobs.slice(0, 12).map((job) => {
+                const selected = focusedJob?.id === job.id;
+                const canCancel =
+                  job.status === "queued" &&
+                  (job.user_id === user.id || user.role === "admin");
+                return (
+                  <li
+                    key={job.id}
+                    className={cn(
+                      "flex items-center justify-between gap-2.5 px-4 py-2.5 transition-colors",
+                      selected ? "bg-[#F2EFE9]/75" : "hover:bg-[#FAF8F4]"
+                    )}
+                  >
                     <button
-                      key={tier}
                       type="button"
-                      onClick={() => setGpuType(tier)}
-                      className={cn(
-                        "rounded-md border px-2.5 py-2 text-left transition-colors",
-                        active
-                          ? "border-[#4A6580] bg-[#EFF3F7] text-[#1C1917]"
-                          : "border-[#E7E5E0] bg-[#FFFFFF] text-[#44403C] hover:bg-[#FAF9F6]"
-                      )}
+                      onClick={() => setSelectedJobId(job.id)}
+                      className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
                     >
-                      <div className="flex items-center justify-between">
-                        <span className="font-mono text-xs font-semibold">
-                          {tier}
-                        </span>
-                        <span className="font-mono text-[10px] text-[#78716C] tabular-nums">
-                          {meta.vram}
-                        </span>
-                      </div>
-                      <div className="mt-0.5 truncate text-[10px] text-[#78716C]">
-                        {meta.label}
+                      {job.image_ids[0] ? (
+                        <img
+                          src={`/api/images/${job.image_ids[0]}/thumb`}
+                          alt=""
+                          className="h-9 w-9 shrink-0 rounded border border-[#E5E0D6] object-cover bg-[#F2EFE9]"
+                        />
+                      ) : (
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded border border-[#E5E0D6] bg-[#FAF8F4] font-mono text-[10px] text-[#62666F] tabular-nums">
+                          {Math.round(job.progress * 100)}%
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          {statusBadge(job.status)}
+                          <span className="font-mono text-[11px] text-[#1A1D24]">
+                            {job.variant}
+                          </span>
+                          <span className="text-[10px] text-[#62666F]">
+                            {formatRelativeTime(job.created_at)}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 truncate text-xs text-[#4A4E58]">
+                          {job.params.prompt}
+                        </p>
                       </div>
                     </button>
-                  );
-                })}
-              </div>
-              <p className="text-[11px] text-[#78716C]">
-                {GPU_TIER_META[gpuType].note}
-              </p>
-            </div>
+                    {canCancel && (
+                      <Button
+                        variant="destructiveOutline"
+                        size="sm"
+                        disabled={cancellingId === job.id}
+                        onClick={() => void handleCancelJob(job.id)}
+                        className="h-7 px-2 text-[11px] shrink-0"
+                      >
+                        {dict.studio.cancelJob}
+                      </Button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      </div>
 
-            <Button
-              type="submit"
-              disabled={
-                submitting ||
-                queueFull ||
-                remainingQuota < batchSize ||
-                !workflow
-              }
-              className="w-full h-10"
-            >
-              {submitting ? (
-                <>
-                  <Loader2 className="animate-spin" />
-                  Queuing Job...
-                </>
-              ) : queueFull ? (
-                `Queue Limit Reached (${user.active_queued}/${user.max_queued})`
-              ) : remainingQuota < batchSize ? (
-                `Daily Quota Insufficient (${remainingQuota} remaining)`
-              ) : (
-                <>
-                  <Sparkles />
-                  Generate {batchSize > 1 ? `${batchSize} Images` : "Image"} ({gpuType})
-                </>
-              )}
-            </Button>
-          </CardContent>
-        </Card>
-      </form>
-
-      {/* Right: Live Compute Stage, Preview & Queue */}
-      <div className="space-y-4 lg:col-span-7">
+      {/* Right Dominant Stage: Primary Artboard */}
+      <div className="space-y-3 lg:col-span-7">
         {gpuWarning && (
           <div
             role="status"
-            className="flex items-start gap-2.5 rounded-lg border border-[#E8D7B8] bg-[#FBF5EA] px-4 py-3 text-xs text-[#9C6D2E]"
+            className="flex items-start gap-2 rounded-lg border border-[#E5D0AD] bg-[#FBF4E8] px-4 py-3 text-xs text-[#8D5B1B]"
           >
             <Clock className="h-4 w-4 shrink-0 mt-0.5" />
             <div>
-              <div className="font-semibold">Colab GPU capacity temporarily unavailable</div>
+              <div className="font-semibold">
+                {dict.studio.gpuUnavailableTitle}
+              </div>
               <p className="mt-0.5">{gpuWarning}</p>
             </div>
           </div>
         )}
 
-        {/* Active Compute & Cold-Start Timeline */}
-        <Card>
-          <CardHeader className="py-3.5">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <Cpu className="h-4 w-4 text-[#4A6580]" />
-                <CardTitle>Live Execution &amp; Preview</CardTitle>
-              </div>
+        <div className="rounded-lg border border-[#E5E0D6] bg-[#FFFFFF] overflow-hidden">
+          {/* Artboard Top Strip */}
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#E5E0D6] px-5 py-3">
+            <div className="flex items-center gap-2">
               {activeManagedWorker ? (
-                <div className="flex items-center gap-2">
-                  <Badge variant="sage" className="font-mono">
-                    {activeManagedWorker.gpu_type} · {activeManagedWorker.status}
-                  </Badge>
-                  <span className="text-[11px] text-[#78716C]">
-                    {activeManagedWorker.account_label}
-                  </span>
-                </div>
+                <Badge variant="sage" className="font-mono">
+                  {activeManagedWorker.gpu_type} · {activeManagedWorker.status}
+                </Badge>
               ) : (
-                <Badge variant="neutral">Standby · 0 active VMs (0 CU/h)</Badge>
+                <Badge variant="neutral">{dict.studio.workerStandby}</Badge>
+              )}
+              {focusedJob && (
+                <>
+                  {statusBadge(focusedJob.status)}
+                  <span className="font-mono text-xs text-[#62666F] tabular-nums">
+                    {focusedJob.variant} · {focusedJob.params.width}×
+                    {focusedJob.params.height}
+                  </span>
+                </>
               )}
             </div>
-          </CardHeader>
 
-          <CardContent className="space-y-4">
+            {focusedJob && (
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-xs font-medium text-[#1A1D24] tabular-nums">
+                  {Math.round(focusedJob.progress * 100)}%
+                </span>
+                {focusedJob.status === "queued" &&
+                  (focusedJob.user_id === user.id || user.role === "admin") && (
+                    <Button
+                      variant="destructiveOutline"
+                      size="sm"
+                      disabled={cancellingId === focusedJob.id}
+                      onClick={() => void handleCancelJob(focusedJob.id)}
+                      className="h-7 px-2.5 text-[11px]"
+                    >
+                      {dict.studio.cancelJob}
+                    </Button>
+                  )}
+              </div>
+            )}
+          </div>
+
+          {/* Artboard Canvas */}
+          <div className="p-5">
             {focusedJob ? (
-              <>
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[#E7E5E0] bg-[#FAF9F6] px-3.5 py-2.5">
-                  <div className="flex items-center gap-2 min-w-0">
-                    {jobStatusBadge(focusedJob.status)}
-                    <span className="font-mono text-xs text-[#44403C] tabular-nums">
-                      {focusedJob.workflow_id}/{focusedJob.variant}
-                    </span>
-                    <span className="font-mono text-[11px] text-[#78716C]">
-                      · {focusedJob.params.gpu_type} · seed {focusedJob.params.seed}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-xs font-semibold text-[#1C1917] tabular-nums">
-                      {Math.round(focusedJob.progress * 100)}%
-                    </span>
-                    {focusedJob.status === "queued" &&
-                      (focusedJob.user_id === user.id || user.role === "admin") && (
-                        <Button
-                          variant="destructiveOutline"
-                          size="sm"
-                          disabled={cancellingId === focusedJob.id}
-                          onClick={() => void handleCancelJob(focusedJob.id)}
-                          className="h-7 px-2 text-[11px]"
-                        >
-                          Cancel
-                        </Button>
-                      )}
-                  </div>
-                </div>
-
-                {/* Stage Timeline */}
-                {focusedJob.status !== "failed" && focusedJob.status !== "cancelled" && (
-                  <div className="space-y-2">
-                    <div className="grid grid-cols-4 gap-2 text-[11px]">
-                      {[
-                        "1. Queued",
-                        "2. Colab Assign",
-                        "3. Bootstrap & Weights",
-                        "4. Sampling & Save",
-                      ].map((label, idx) => {
-                        const done = stepStageIndex > idx;
-                        const current = stepStageIndex === idx;
-                        return (
-                          <div
-                            key={label}
-                            className={cn(
-                              "rounded-md border px-2.5 py-1.5 transition-colors",
-                              done &&
-                                "border-[#C5DFD0] bg-[#EEF6F1] text-[#3D7A5A]",
-                              current &&
-                                "border-[#CBD7E3] bg-[#EFF3F7] text-[#3D546B] font-medium",
-                              !done &&
-                                !current &&
-                                "border-[#E7E5E0] bg-[#FFFFFF] text-[#78716C]"
-                            )}
-                          >
-                            {label}
-                          </div>
-                        );
-                      })}
+              <div className="space-y-4">
+                {focusedJob.status !== "failed" &&
+                  focusedJob.status !== "cancelled" &&
+                  focusedJob.status !== "completed" && (
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-4 gap-2 text-[11px]">
+                        {dict.studio.stages.map((label, idx) => {
+                          const done = stepStageIndex > idx;
+                          const current = stepStageIndex === idx;
+                          return (
+                            <div
+                              key={label}
+                              className={cn(
+                                "rounded-md border px-2.5 py-1.5 text-center transition-colors",
+                                done &&
+                                  "border-[#BBD8C9] bg-[#ECF5F0] text-[#2F6F52]",
+                                current &&
+                                  "border-[#ECC5BD] bg-[#FDF1EE] text-[#C85642] font-medium",
+                                !done &&
+                                  !current &&
+                                  "border-[#E5E0D6] bg-[#FAF8F4] text-[#62666F]"
+                              )}
+                            >
+                              {label}
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div className="h-1 w-full overflow-hidden rounded-full bg-[#E5E0D6]">
+                        <div
+                          className="h-full rounded-full bg-[#C85642] transition-all duration-300"
+                          style={{
+                            width: `${Math.max(
+                              focusedJob.status === "queued" ? 8 : 16,
+                              Math.round(focusedJob.progress * 100)
+                            )}%`,
+                          }}
+                        />
+                      </div>
                     </div>
-                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-[#E7E5E0]">
-                      <div
-                        className={cn(
-                          "h-full rounded-full transition-all duration-300",
-                          focusedJob.status === "completed"
-                            ? "bg-[#3D7A5A]"
-                            : "bg-[#4A6580]"
-                        )}
-                        style={{
-                          width: `${Math.max(
-                            focusedJob.status === "queued" ? 8 : 15,
-                            Math.round(focusedJob.progress * 100)
-                          )}%`,
-                        }}
-                      />
-                    </div>
-                  </div>
-                )}
+                  )}
 
                 {focusedJob.status === "failed" && focusedJob.error_msg && (
-                  <div className="flex items-start gap-2 rounded-md border border-[#E8C9C8] bg-[#FBF0F0] px-3 py-2 text-xs text-[#A84442]">
+                  <div className="flex items-start gap-2 rounded-md border border-[#EBC1BC] bg-[#FDF0EE] px-3 py-2.5 text-xs text-[#B43B2E]">
                     <XCircle className="h-4 w-4 shrink-0 mt-0.5" />
                     <span className="break-all">{focusedJob.error_msg}</span>
                   </div>
                 )}
 
-                {/* Preview Canvas */}
                 {focusedJob.image_ids.length > 0 ? (
                   <div className="space-y-3">
                     <div
@@ -1161,32 +1363,33 @@ export function StudioView({
                       {focusedJob.image_ids.map((imgId) => (
                         <div
                           key={imgId}
-                          className="group relative overflow-hidden rounded-lg border border-[#E7E5E0] bg-[#F5F3EE]"
+                          className="overflow-hidden rounded-lg border border-[#E5E0D6] bg-[#F2EFE9]"
                         >
                           <img
                             src={`/api/images/${imgId}/original`}
                             alt={focusedJob.params.prompt}
-                            className="max-h-[520px] w-full object-contain mx-auto"
+                            className="max-h-[580px] w-full object-contain mx-auto"
                           />
-                          <div className="flex items-center justify-between border-t border-[#E7E5E0] bg-[#FFFFFF] px-3 py-2 text-[11px] text-[#78716C]">
-                            <span className="font-mono tabular-nums">
-                              {focusedJob.params.width}×{focusedJob.params.height}
+                          <div className="flex items-center justify-between border-t border-[#E5E0D6] bg-[#FFFFFF] px-3.5 py-2 text-xs">
+                            <span className="font-mono text-[#62666F] tabular-nums">
+                              seed {focusedJob.params.seed}
                             </span>
                             <div className="flex items-center gap-3">
                               <a
                                 href={`/api/images/${imgId}/original`}
                                 download={`colab-canvas-${imgId.slice(0, 8)}.png`}
-                                className="inline-flex items-center gap-1 font-medium text-[#4A6580] hover:underline"
+                                className="inline-flex items-center gap-1 font-medium text-[#3E5C76] hover:underline"
                               >
-                                PNG
-                                <ExternalLink className="h-3 w-3" />
+                                <Download className="h-3.5 w-3.5" />
+                                {dict.studio.downloadPng}
                               </a>
                               <button
                                 type="button"
                                 onClick={onOpenGallery}
-                                className="font-medium text-[#1C1917] hover:underline"
+                                className="inline-flex items-center gap-1 font-medium text-[#1A1D24] hover:underline"
                               >
-                                Gallery →
+                                {dict.studio.toGallery}
+                                <ExternalLink className="h-3.5 w-3.5" />
                               </button>
                             </div>
                           </div>
@@ -1195,177 +1398,60 @@ export function StudioView({
                     </div>
                   </div>
                 ) : (
-                  <div className="flex min-h-[260px] flex-col items-center justify-center rounded-lg border border-dashed border-[#D6D3CB] bg-[#FAF9F6] p-6 text-center">
-                    {focusedJob.status === "booting" ||
-                    focusedJob.status === "running" ||
-                    focusedJob.status === "queued" ? (
-                      <>
-                        <Loader2 className="h-6 w-6 animate-spin text-[#4A6580]" />
-                        <p className="mt-2.5 text-sm font-medium text-[#1C1917]">
-                          {focusedJob.status === "queued"
-                            ? "Waiting in FIFO queue..."
-                            : focusedJob.status === "booting"
-                            ? "Provisioning Colab GPU & syncing model weights..."
-                            : `Sampling artwork (${Math.round(
-                                focusedJob.progress * 100
-                              )}%)...`}
-                        </p>
-                        <p className="mt-1 max-w-md text-xs text-[#78716C] line-clamp-2">
-                          {focusedJob.params.prompt}
-                        </p>
-                      </>
-                    ) : (
-                      <>
-                        <CheckCircle2 className="h-6 w-6 text-[#78716C]" />
-                        <p className="mt-2 text-xs text-[#78716C]">
-                          No preview images attached to this job ({focusedJob.status}).
-                        </p>
-                      </>
-                    )}
+                  <div className="flex min-h-[420px] flex-col items-center justify-center rounded-lg border border-dashed border-[#D4CEC2] bg-[#FAF8F4] p-8 text-center">
+                    <Loader2 className="h-6 w-6 animate-spin text-[#C85642]" />
+                    <p className="mt-3 text-sm font-medium text-[#1A1D24]">
+                      {focusedJob.status === "queued"
+                        ? dict.studio.stageQueued
+                        : focusedJob.status === "booting"
+                        ? dict.studio.stageBooting
+                        : focusedJob.status === "running"
+                        ? interpolate(dict.studio.stageRunning, {
+                            pct: Math.round(focusedJob.progress * 100),
+                          })
+                        : interpolate(dict.studio.stageEmpty, {
+                            status: dict.studio.status[focusedJob.status],
+                          })}
+                    </p>
+                    <p className="mt-1.5 max-w-md text-xs text-[#62666F] line-clamp-2">
+                      {focusedJob.params.prompt}
+                    </p>
                   </div>
                 )}
-              </>
-            ) : (
-              <div className="flex min-h-[280px] flex-col items-center justify-center rounded-lg border border-dashed border-[#D6D3CB] bg-[#FAF9F6] p-8 text-center">
-                <div
-                  className="mb-3 rounded border border-[#D6D3CB] bg-[#FFFFFF] shadow-xs"
-                  style={{
-                    width: `${Math.max(48, Math.round((width / Math.max(width, height)) * 72))}px`,
-                    height: `${Math.max(48, Math.round((height / Math.max(width, height)) * 72))}px`,
-                  }}
-                />
-                <p className="text-sm font-medium text-[#1C1917]">
-                  Ready to compose
-                </p>
-                <p className="mt-1 max-w-sm text-xs text-[#78716C]">
-                  Write a prompt on the left and submit a job. Workers boot on-demand and shut down automatically when idle.
-                </p>
               </div>
-            )}
-          </CardContent>
-        </Card>
+            ) : (
+              <div className="flex min-h-[480px] flex-col items-center justify-center rounded-lg border border-dashed border-[#D4CEC2] bg-[#FAF8F4] px-6 py-10 text-center">
+                <h2 className="font-display text-2xl font-semibold text-[#1A1D24]">
+                  {dict.studio.stageIdleTitle}
+                </h2>
+                <p className="mt-1.5 text-xs text-[#62666F]">
+                  {dict.studio.stageIdleSubtitle}
+                </p>
 
-        {/* Queue & Recent Jobs */}
-        <Card>
-          <CardHeader className="py-3.5">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <CardTitle>Queue &amp; Recent Jobs</CardTitle>
-                <CardDescription>
-                  Live status via SSE `/api/events` (queued jobs can be cancelled)
-                </CardDescription>
-              </div>
-              <div className="flex items-center gap-1 rounded-md border border-[#E7E5E0] bg-[#FAF9F6] p-0.5 text-xs">
-                <button
-                  type="button"
-                  onClick={() => setJobScope("mine")}
-                  className={cn(
-                    "rounded-sm px-2.5 py-1 font-medium transition-colors",
-                    jobScope === "mine"
-                      ? "bg-[#FFFFFF] text-[#1C1917] shadow-2xs"
-                      : "text-[#78716C] hover:text-[#1C1917]"
-                  )}
-                >
-                  Mine
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setJobScope("all")}
-                  className={cn(
-                    "rounded-sm px-2.5 py-1 font-medium transition-colors",
-                    jobScope === "all"
-                      ? "bg-[#FFFFFF] text-[#1C1917] shadow-2xs"
-                      : "text-[#78716C] hover:text-[#1C1917]"
-                  )}
-                >
-                  All ({jobs.length})
-                </button>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent className="p-0">
-            {visibleJobs.length === 0 ? (
-              <div className="px-5 py-8 text-center text-xs text-[#78716C]">
-                No jobs recorded yet.
-              </div>
-            ) : (
-              <ul className="divide-y divide-[#E7E5E0]">
-                {visibleJobs.slice(0, 15).map((job) => {
-                  const selected = focusedJob?.id === job.id;
-                  const canCancel =
-                    job.status === "queued" &&
-                    (job.user_id === user.id || user.role === "admin");
-                  return (
-                    <li
-                      key={job.id}
-                      className={cn(
-                        "flex items-center justify-between gap-3 px-5 py-3 transition-colors",
-                        selected ? "bg-[#EFF3F7]/45" : "hover:bg-[#FAF9F6]"
-                      )}
+                <div className="mt-6 grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2">
+                  {dict.studio.starterPrompts.map((chip) => (
+                    <button
+                      key={chip.label}
+                      type="button"
+                      onClick={() => {
+                        setPrompt(chip.prompt);
+                        promptRef.current?.focus();
+                      }}
+                      className="rounded-md border border-[#E5E0D6] bg-[#FFFFFF] px-3.5 py-2.5 text-left transition-colors hover:border-[#C85642] hover:bg-[#FDF1EE]/40"
                     >
-                      <button
-                        type="button"
-                        onClick={() => setSelectedJobId(job.id)}
-                        className="flex min-w-0 flex-1 items-center gap-3 text-left"
-                      >
-                        {job.image_ids[0] ? (
-                          <img
-                            src={`/api/images/${job.image_ids[0]}/thumb`}
-                            alt=""
-                            className="h-10 w-10 shrink-0 rounded border border-[#E7E5E0] object-cover bg-[#F5F3EE]"
-                          />
-                        ) : (
-                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded border border-[#E7E5E0] bg-[#F5F3EE] font-mono text-[10px] text-[#78716C] tabular-nums">
-                            {Math.round(job.progress * 100)}%
-                          </div>
-                        )}
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            {jobStatusBadge(job.status)}
-                            <span className="font-mono text-[11px] font-medium text-[#1C1917]">
-                              {job.variant}
-                            </span>
-                            <span className="font-mono text-[10px] text-[#78716C] tabular-nums">
-                              {job.params.width}×{job.params.height} ·{" "}
-                              {job.params.gpu_type}
-                            </span>
-                            {jobScope === "all" && (
-                              <span className="text-[10px] text-[#78716C]">
-                                by {job.username}
-                              </span>
-                            )}
-                            <span className="text-[10px] text-[#78716C]">
-                              · {formatRelativeTime(job.created_at)}
-                            </span>
-                          </div>
-                          <p className="mt-0.5 truncate text-xs text-[#44403C]">
-                            {job.params.prompt}
-                          </p>
-                          {job.error_msg && (
-                            <p className="mt-0.5 truncate text-[11px] text-[#A84442]">
-                              {job.error_msg}
-                            </p>
-                          )}
-                        </div>
-                      </button>
-                      {canCancel && (
-                        <Button
-                          variant="destructiveOutline"
-                          size="sm"
-                          disabled={cancellingId === job.id}
-                          onClick={() => void handleCancelJob(job.id)}
-                          className="h-7 px-2.5 text-[11px] shrink-0"
-                        >
-                          Cancel
-                        </Button>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
+                      <div className="text-xs font-medium text-[#1A1D24]">
+                        {chip.label}
+                      </div>
+                      <div className="mt-0.5 truncate text-[11px] text-[#62666F]">
+                        {chip.prompt}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
             )}
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       </div>
     </div>
   );

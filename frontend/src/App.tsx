@@ -1,41 +1,62 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
+import { useI18n } from "@/i18n";
 import {
   ApiError,
+  assistantApi,
   authApi,
   jobsApi,
   lorasApi,
   poolApi,
+  streamAssistantChat,
   workflowsApi,
 } from "@/lib/api";
 import { useEventStream } from "@/hooks/useEventStream";
-import type {
-  AuthMode,
-  AuthUser,
-  ColabAccount,
-  JobRecord,
-  LoraRecord,
-  RemixDraft,
-  WorkerRecord,
-  WorkflowManifest,
+import {
+  sanitizeGpuTiers,
+  type AssistantChatMode,
+  type AssistantStatusResponse,
+  type AuthMode,
+  type AuthUser,
+  type CanvasRecipe,
+  type ChatThreadMessage,
+  type ColabAccount,
+  type JobRecord,
+  type LoraRecord,
+  type StudioContextSnapshot,
+  type StudioDraft,
+  type WorkerRecord,
+  type WorkflowManifest,
 } from "@/types/api";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
 import { AuthGate } from "@/components/AuthGate";
 import { TopShell, type AppRoute } from "@/components/TopShell";
 import { StudioView } from "@/components/studio/StudioView";
 import { GalleryView } from "@/components/gallery/GalleryView";
-import { PoolAdminView } from "@/components/pool/PoolAdminView";
-import { Button } from "@/components/ui/button";
+import {
+  PoolAdminView,
+  type ConsoleTab,
+} from "@/components/pool/PoolAdminView";
+import { InspireView } from "@/components/assistant/InspireView";
+import { FloatingCopilot } from "@/components/assistant/FloatingCopilot";
 
 function parseHashRoute(): AppRoute {
   const raw = window.location.hash.replace(/^#\/?/, "").toLowerCase();
+  if (raw === "chat") return "chat";
   if (raw === "gallery") return "gallery";
   if (raw === "pool") return "pool";
   return "studio";
 }
 
+function makeMsgId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
 export function App() {
+  const { locale, dict } = useI18n();
   const [route, setRoute] = useState<AppRoute>(() => parseHashRoute());
+  const [consoleTab, setConsoleTab] = useState<ConsoleTab>("compute");
 
   const [booting, setBooting] = useState(true);
   const [bootError, setBootError] = useState<string | null>(null);
@@ -51,9 +72,19 @@ export function App() {
   const [accounts, setAccounts] = useState<ColabAccount[]>([]);
   const [gpuWarning, setGpuWarning] = useState<string | null>(null);
   const [galleryRefreshSignal, setGalleryRefreshSignal] = useState(0);
-  const [remixDraft, setRemixDraft] = useState<RemixDraft | null>(null);
 
-  // Hash navigation listener
+  const [pendingDraft, setPendingDraft] = useState<StudioDraft | null>(null);
+  const [studioContext, setStudioContext] =
+    useState<StudioContextSnapshot | null>(null);
+
+  // Shared Copilot state across #chat & FloatingCopilot
+  const [assistantStatus, setAssistantStatus] =
+    useState<AssistantStatusResponse | null>(null);
+  const [copilotOpen, setCopilotOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatThreadMessage[]>([]);
+  const [chatStreaming, setChatStreaming] = useState(false);
+  const chatAbortRef = useRef<AbortController | null>(null);
+
   useEffect(() => {
     if (!window.location.hash) {
       window.history.replaceState(null, "", "#studio");
@@ -104,19 +135,30 @@ export function App() {
     setWorkers(wrkRes.workers);
   }, []);
 
+  const refreshAssistantStatus = useCallback(async () => {
+    try {
+      const st = await assistantApi.status();
+      setAssistantStatus(st);
+    } catch {
+      setAssistantStatus(null);
+    }
+  }, []);
+
   const loadWorkspaceData = useCallback(async () => {
-    const [wfRes, loraRes, jobRes, accRes, wrkRes] = await Promise.all([
+    const [wfRes, loraRes, jobRes, accRes, wrkRes, aiRes] = await Promise.all([
       workflowsApi.list(),
       lorasApi.list(),
       jobsApi.list({ limit: 50 }),
       poolApi.listAccounts(),
       poolApi.listWorkers(),
+      assistantApi.status().catch(() => null),
     ]);
     setWorkflows(wfRes.workflows);
     setLoras(loraRes.loras);
     setJobs(jobRes.jobs);
     setAccounts(accRes.accounts);
     setWorkers(wrkRes.workers);
+    setAssistantStatus(aiRes);
   }, []);
 
   const bootstrapAuth = useCallback(async () => {
@@ -143,20 +185,18 @@ export function App() {
           setBootError(
             stErr instanceof ApiError
               ? stErr.detail
-              : "Could not reach colab-canvas backend API."
+              : dict.app.apiUnreachable
           );
         }
       } else {
         setBootError(
-          err instanceof ApiError
-            ? err.detail
-            : "Could not connect to colab-canvas backend."
+          err instanceof ApiError ? err.detail : dict.app.apiUnreachable
         );
       }
     } finally {
       setBooting(false);
     }
-  }, [loadWorkspaceData]);
+  }, [loadWorkspaceData, dict.app.apiUnreachable]);
 
   useEffect(() => {
     void bootstrapAuth();
@@ -174,6 +214,8 @@ export function App() {
   );
 
   const handleLogout = useCallback(async () => {
+    chatAbortRef.current?.abort();
+    setChatStreaming(false);
     try {
       await authApi.logout();
     } finally {
@@ -184,12 +226,15 @@ export function App() {
       setWorkers([]);
       setAccounts([]);
       setGpuWarning(null);
+      setChatMessages([]);
+      setCopilotOpen(false);
+      setAssistantStatus(null);
       try {
         const st = await authApi.status();
         setAuthMode(st.auth_mode);
         setNeedsSetup(st.needs_setup);
       } catch {
-        // Keep current authMode
+        // Keep authMode
       }
     }
   }, []);
@@ -239,10 +284,7 @@ export function App() {
       },
       onPoolGpuUnavailable: (ev) => {
         setGpuWarning(
-          `Requested ${ev.gpu_type} for job ${ev.job_id.slice(
-            0,
-            8
-          )} is temporarily unavailable across onboarded accounts. Job remains queued and will retry automatically.`
+          `${ev.gpu_type} · ${ev.job_id.slice(0, 8)}`
         );
       },
       onImageCreated: () => {
@@ -261,6 +303,240 @@ export function App() {
     }
   );
 
+  const sendChatMessage = useCallback(
+    async (text: string, mode: AssistantChatMode = "chat") => {
+      const clean = text.trim();
+      if (!clean || chatStreaming) return;
+
+      const userMsg: ChatThreadMessage = {
+        id: makeMsgId(),
+        role: "user",
+        content: clean,
+      };
+      const assistantId = makeMsgId();
+      const placeholder: ChatThreadMessage = {
+        id: assistantId,
+        role: "assistant",
+        content: "",
+        streaming: true,
+      };
+
+      const historyPayload = [...chatMessages, userMsg].map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+
+      setChatMessages((prev) => [...prev, userMsg, placeholder]);
+      setChatStreaming(true);
+
+      const controller = new AbortController();
+      chatAbortRef.current = controller;
+
+      try {
+        await streamAssistantChat(
+          {
+            messages: historyPayload,
+            locale,
+            mode,
+            studio_context: studioContext
+              ? (studioContext as unknown as Record<string, unknown>)
+              : null,
+          },
+          {
+            signal: controller.signal,
+            onDelta: (chunk) => {
+              setChatMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId
+                    ? { ...m, content: m.content + chunk }
+                    : m
+                )
+              );
+            },
+            onDone: () => {
+              setChatMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId ? { ...m, streaming: false } : m
+                )
+              );
+            },
+            onError: (errMsg) => {
+              setChatMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId
+                    ? { ...m, streaming: false, error: errMsg }
+                    : m
+                )
+              );
+            },
+          }
+        );
+      } catch (err) {
+        if ((err as Error)?.name === "AbortError") {
+          setChatMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId ? { ...m, streaming: false } : m
+            )
+          );
+        } else {
+          const message =
+            err instanceof ApiError
+              ? err.detail
+              : (err as Error)?.message || "Assistant request failed";
+          setChatMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? { ...m, streaming: false, error: message }
+                : m
+            )
+          );
+        }
+      } finally {
+        chatAbortRef.current = null;
+        setChatStreaming(false);
+        setChatMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId ? { ...m, streaming: false } : m
+          )
+        );
+      }
+    },
+    [chatMessages, chatStreaming, locale, studioContext]
+  );
+
+  const stopChatStreaming = useCallback(() => {
+    chatAbortRef.current?.abort();
+  }, []);
+
+  const buildDraftFromRecipe = useCallback(
+    (recipe: CanvasRecipe): StudioDraft => ({
+      workflow_id: workflows[0]?.id ?? "anima",
+      variant: recipe.variant,
+      prompt: recipe.prompt,
+      negative_prompt: recipe.negative_prompt,
+      width: recipe.width,
+      height: recipe.height,
+      steps: recipe.steps,
+      cfg: recipe.cfg,
+      loras: recipe.loras?.map((l) => ({
+        id: l.id,
+        strength: l.strength ?? 0.8,
+      })),
+    }),
+    [workflows]
+  );
+
+  const handleApplyRecipeFromChat = useCallback(
+    (recipe: CanvasRecipe, switchToStudio: boolean) => {
+      setPendingDraft(buildDraftFromRecipe(recipe));
+      if (switchToStudio) {
+        navigate("studio");
+      }
+    },
+    [buildDraftFromRecipe, navigate]
+  );
+
+  const handleGenerateFromRecipe = useCallback(
+    async (
+      messageId: string,
+      recipeIndex: number,
+      recipe: CanvasRecipe
+    ) => {
+      if (!user) return;
+      const wf = workflows[0];
+      const allowedGpus = sanitizeGpuTiers(user.allowed_gpus);
+      const gpuType = allowedGpus[0] ?? "L4";
+
+      const requestedVar = recipe.variant ?? wf?.default_variant ?? "turbo";
+      const spec = wf?.variants[requestedVar];
+      const validVar =
+        spec && (user.role === "admin" || !spec.admin_only)
+          ? requestedVar
+          : Object.entries(wf?.variants ?? {}).find(
+              ([, v]) => user.role === "admin" || !v.admin_only
+            )?.[0] ?? "turbo";
+
+      const b = wf?.bounds;
+      const clampDim = (val: number | undefined, fallback: number) => {
+        if (!val) return fallback;
+        const step = b?.dimension_step ?? 64;
+        const min = b?.min_dimension ?? 512;
+        const max = b?.max_dimension ?? 1536;
+        const snapped = Math.round(val / step) * step;
+        return Math.min(max, Math.max(min, snapped));
+      };
+
+      const validLoraIds = (recipe.loras ?? [])
+        .filter((item) => loras.some((l) => l.id === item.id))
+        .slice(0, wf?.max_loras ?? 4)
+        .map((item) => ({
+          id: item.id,
+          strength: Math.min(2, Math.max(-2, item.strength ?? 0.8)),
+        }));
+
+      try {
+        const res = await jobsApi.submit({
+          workflow_id: wf?.id ?? "anima",
+          variant: validVar,
+          prompt: recipe.prompt,
+          negative_prompt: recipe.negative_prompt ?? null,
+          width: clampDim(recipe.width, 1024),
+          height: clampDim(recipe.height, 1024),
+          batch_size: 1,
+          steps:
+            recipe.steps !== undefined
+              ? Math.min(
+                  b?.max_steps ?? 60,
+                  Math.max(b?.min_steps ?? 1, recipe.steps)
+                )
+              : null,
+          cfg:
+            recipe.cfg !== undefined
+              ? Math.min(
+                  b?.max_cfg ?? 12,
+                  Math.max(b?.min_cfg ?? 1, recipe.cfg)
+                )
+              : null,
+          lora_ids: validLoraIds,
+          gpu_type: gpuType,
+        });
+
+        setJobs((prev) => [
+          res.job,
+          ...prev.filter((j) => j.id !== res.job.id),
+        ]);
+        setChatMessages((prev) =>
+          prev.map((m) =>
+            m.id === messageId
+              ? {
+                  ...m,
+                  generatedJobs: {
+                    ...(m.generatedJobs ?? {}),
+                    [recipeIndex]: res.job.id,
+                  },
+                }
+              : m
+          )
+        );
+        void refreshMe();
+      } catch (err) {
+        const msg = err instanceof ApiError ? err.detail : "Submit failed";
+        setChatMessages((prev) =>
+          prev.map((m) =>
+            m.id === messageId ? { ...m, error: msg } : m
+          )
+        );
+      }
+    },
+    [user, workflows, loras, refreshMe]
+  );
+
+  const openAssistantSettings = useCallback(() => {
+    setConsoleTab("assistant");
+    setCopilotOpen(false);
+    navigate("pool");
+  }, [navigate]);
+
   const activeJobCount = useMemo(
     () =>
       jobs.filter(
@@ -274,24 +550,24 @@ export function App() {
 
   if (booting) {
     return (
-      <div className="min-h-screen bg-[#FAF9F6] flex flex-col items-center justify-center gap-3 text-xs text-[#78716C]">
-        <Loader2 className="h-5 w-5 animate-spin text-[#4A6580]" />
-        <span>Connecting to colab-canvas studio...</span>
+      <div className="min-h-screen bg-[#FAF8F4] flex flex-col items-center justify-center gap-3 text-xs text-[#62666F]">
+        <Loader2 className="h-5 w-5 animate-spin text-[#C85642]" />
+        <span>{dict.app.connecting}</span>
       </div>
     );
   }
 
   if (bootError) {
     return (
-      <div className="min-h-screen bg-[#FAF9F6] flex flex-col items-center justify-center p-6 text-center">
-        <div className="max-w-md rounded-lg border border-[#E7E5E0] bg-[#FFFFFF] p-6 space-y-4">
-          <h1 className="text-sm font-semibold text-[#1C1917]">
-            Studio API Unreachable
+      <div className="min-h-screen bg-[#FAF8F4] flex flex-col items-center justify-center p-6 text-center">
+        <div className="max-w-md rounded-lg border border-[#E5E0D6] bg-[#FFFFFF] p-6 space-y-4">
+          <h1 className="font-display text-base font-semibold text-[#1A1D24]">
+            {dict.app.apiUnreachable}
           </h1>
-          <p className="text-xs text-[#78716C]">{bootError}</p>
+          <p className="text-xs text-[#62666F]">{bootError}</p>
           <Button onClick={() => void bootstrapAuth()} size="sm">
             <RefreshCw className="h-3.5 w-3.5" />
-            Retry Connection
+            {dict.app.retryConnection}
           </Button>
         </div>
       </div>
@@ -314,7 +590,7 @@ export function App() {
 
   return (
     <TooltipProvider delayDuration={200}>
-      <div className="min-h-screen bg-[#FAF9F6] text-[#1C1917]">
+      <div className="min-h-screen bg-[#FAF8F4] text-[#1A1D24]">
         <TopShell
           route={route}
           onNavigate={navigate}
@@ -327,6 +603,23 @@ export function App() {
         />
 
         <main className="mx-auto max-w-[1440px] px-4 py-6 sm:px-6">
+          {route === "chat" && (
+            <InspireView
+              user={user}
+              assistantStatus={assistantStatus}
+              messages={chatMessages}
+              streaming={chatStreaming}
+              jobs={jobs}
+              onSendMessage={sendChatMessage}
+              onStopStreaming={stopChatStreaming}
+              onClearChat={() => setChatMessages([])}
+              onApplyRecipeToStudio={(r) => handleApplyRecipeFromChat(r, true)}
+              onGenerateFromRecipe={handleGenerateFromRecipe}
+              onOpenAssistantSettings={openAssistantSettings}
+              onOpenGallery={() => navigate("gallery")}
+            />
+          )}
+
           {route === "studio" && (
             <StudioView
               user={user}
@@ -335,10 +628,14 @@ export function App() {
               jobs={jobs}
               workers={workers}
               gpuWarning={gpuWarning}
-              remixDraft={remixDraft}
-              onConsumeRemixDraft={() => setRemixDraft(null)}
+              pendingDraft={pendingDraft}
+              onConsumeDraft={() => setPendingDraft(null)}
+              onContextChange={setStudioContext}
               onJobSubmitted={(job) => {
-                setJobs((prev) => [job, ...prev.filter((j) => j.id !== job.id)]);
+                setJobs((prev) => [
+                  job,
+                  ...prev.filter((j) => j.id !== job.id),
+                ]);
                 void refreshMe();
               }}
               onJobCancelled={(job) => {
@@ -357,7 +654,7 @@ export function App() {
               workflows={workflows}
               refreshSignal={galleryRefreshSignal}
               onRemixInStudio={(draft) => {
-                setRemixDraft(draft);
+                setPendingDraft(draft);
                 navigate("studio");
               }}
               onImageDeleted={() => {
@@ -372,11 +669,42 @@ export function App() {
               workers={workers}
               accounts={accounts}
               loras={loras}
+              activeTab={consoleTab}
+              onTabChange={setConsoleTab}
               onPoolChanged={refreshPool}
               onLorasChanged={refreshLoras}
+              onAssistantConfigSaved={refreshAssistantStatus}
             />
           )}
         </main>
+
+        {route !== "chat" && (
+          <FloatingCopilot
+            user={user}
+            open={copilotOpen}
+            onOpenChange={setCopilotOpen}
+            showStudioChips={route === "studio"}
+            assistantStatus={assistantStatus}
+            messages={chatMessages}
+            streaming={chatStreaming}
+            jobs={jobs}
+            onSendMessage={sendChatMessage}
+            onStopStreaming={stopChatStreaming}
+            onApplyRecipeToStudio={(r) =>
+              handleApplyRecipeFromChat(r, route !== "studio")
+            }
+            onGenerateFromRecipe={handleGenerateFromRecipe}
+            onExpandToInspire={() => {
+              setCopilotOpen(false);
+              navigate("chat");
+            }}
+            onOpenAssistantSettings={openAssistantSettings}
+            onOpenGallery={() => {
+              setCopilotOpen(false);
+              navigate("gallery");
+            }}
+          />
+        )}
       </div>
     </TooltipProvider>
   );

@@ -10,17 +10,17 @@ import {
   Sparkles,
   Trash2,
 } from "lucide-react";
+import { interpolate, useI18n } from "@/i18n";
 import { ApiError, imagesApi } from "@/lib/api";
 import { cn, formatTimestamp } from "@/lib/utils";
 import type {
   AuthUser,
   ImageRecord,
-  RemixDraft,
+  StudioDraft,
   WorkflowManifest,
 } from "@/types/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -42,17 +42,11 @@ interface GalleryViewProps {
   user: AuthUser;
   workflows: WorkflowManifest[];
   refreshSignal: number;
-  onRemixInStudio: (draft: RemixDraft) => void;
+  onRemixInStudio: (draft: StudioDraft) => void;
   onImageDeleted?: () => void;
 }
 
 const PAGE_LIMIT = 40;
-
-function uploadBadge(state: ImageRecord["upload_state"]) {
-  if (state === "uploaded") return <Badge variant="sage">uploaded</Badge>;
-  if (state === "failed") return <Badge variant="vermilion">upload failed</Badge>;
-  return <Badge variant="ochre">pending outbox</Badge>;
-}
 
 export function GalleryView({
   user,
@@ -61,6 +55,7 @@ export function GalleryView({
   onRemixInStudio,
   onImageDeleted,
 }: GalleryViewProps) {
+  const { dict } = useI18n();
   const [images, setImages] = useState<ImageRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
@@ -105,7 +100,7 @@ export function GalleryView({
         prev ? res.images.find((img) => img.id === prev.id) ?? prev : null
       );
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "Failed to load gallery.");
+      setError(err instanceof ApiError ? err.detail : "Failed to load gallery");
     } finally {
       setLoading(false);
     }
@@ -116,8 +111,7 @@ export function GalleryView({
   }, [fetchImages, refreshSignal]);
 
   const handleToggleFavorite = async (img: ImageRecord) => {
-    const canModify = img.user_id === user.id || user.role === "admin";
-    if (!canModify) return;
+    if (img.user_id !== user.id && user.role !== "admin") return;
     try {
       const res = await imagesApi.setFavorite(img.id, !img.is_favorite);
       setImages((prev) =>
@@ -127,9 +121,7 @@ export function GalleryView({
         setSelectedImage(res.image);
       }
     } catch (err) {
-      setError(
-        err instanceof ApiError ? err.detail : "Could not update favorite state."
-      );
+      setError(err instanceof ApiError ? err.detail : "Update failed");
     }
   };
 
@@ -144,9 +136,7 @@ export function GalleryView({
       setConfirmDeleteId(null);
       onImageDeleted?.();
     } catch (err) {
-      setError(
-        err instanceof ApiError ? err.detail : "Failed to delete image."
-      );
+      setError(err instanceof ApiError ? err.detail : "Delete failed");
     } finally {
       setDeleting(false);
     }
@@ -154,20 +144,19 @@ export function GalleryView({
 
   const handleRemix = (img: ImageRecord) => {
     const wf = workflows.find((w) => w.id === img.workflow_id) ?? workflows[0];
-    const variantDefaults = wf?.variants[img.variant]?.defaults;
-    const draft: RemixDraft = {
+    const defaults = wf?.variants[img.variant]?.defaults;
+    const draft: StudioDraft = {
       workflow_id: img.workflow_id,
       variant: img.variant,
       prompt: img.meta.prompt ?? "",
       negative_prompt:
-        img.meta.negative_prompt ?? variantDefaults?.negative_prompt ?? "",
+        img.meta.negative_prompt ?? defaults?.negative_prompt ?? "",
       width: img.meta.width || img.width || 1024,
       height: img.meta.height || img.height || 1024,
-      steps: img.meta.steps ?? variantDefaults?.steps ?? 10,
-      cfg: img.meta.cfg ?? variantDefaults?.cfg ?? 1.0,
-      sampler_name:
-        img.meta.sampler_name ?? variantDefaults?.sampler_name ?? "euler",
-      scheduler: img.meta.scheduler ?? variantDefaults?.scheduler ?? "simple",
+      steps: img.meta.steps ?? defaults?.steps ?? 10,
+      cfg: img.meta.cfg ?? defaults?.cfg ?? 1.0,
+      sampler_name: img.meta.sampler_name ?? defaults?.sampler_name ?? "euler",
+      scheduler: img.meta.scheduler ?? defaults?.scheduler ?? "simple",
       seed: img.meta.seed ?? img.seed,
       loras: (img.meta.loras ?? []).map((l) => ({
         id: l.id,
@@ -176,7 +165,7 @@ export function GalleryView({
         strength: l.strength,
       })),
       gpu_type: img.meta.gpu_type ?? "L4",
-      sourceImageId: img.id,
+      sourceLabel: img.id.slice(0, 8),
     };
     setSelectedImage(null);
     onRemixInStudio(draft);
@@ -188,216 +177,209 @@ export function GalleryView({
       setCopiedSeed(true);
       window.setTimeout(() => setCopiedSeed(false), 1500);
     } catch {
-      // Clipboard blocked in non-HTTPS contexts
+      // Clipboard blocked
     }
   };
 
   return (
     <div className="space-y-4">
-      {/* Filter Bar */}
-      <Card className="p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-1 rounded-md border border-[#E7E5E0] bg-[#FAF9F6] p-0.5 text-xs">
-              <button
-                type="button"
-                onClick={() => {
-                  setOffset(0);
-                  setMineOnly(false);
-                }}
-                className={cn(
-                  "rounded-sm px-3 py-1 font-medium transition-colors",
-                  !mineOnly
-                    ? "bg-[#FFFFFF] text-[#1C1917] shadow-2xs"
-                    : "text-[#78716C] hover:text-[#1C1917]"
-                )}
-              >
-                All Works
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setOffset(0);
-                  setMineOnly(true);
-                }}
-                className={cn(
-                  "rounded-sm px-3 py-1 font-medium transition-colors",
-                  mineOnly
-                    ? "bg-[#FFFFFF] text-[#1C1917] shadow-2xs"
-                    : "text-[#78716C] hover:text-[#1C1917]"
-                )}
-              >
-                My Works
-              </button>
-            </div>
-
-            <div className="w-40">
-              <Select
-                value={variantFilter}
-                onValueChange={(v) => {
-                  setOffset(0);
-                  setVariantFilter(v);
-                }}
-              >
-                <SelectTrigger className="h-8 text-xs">
-                  <SelectValue placeholder="All variants" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__all__">All variants</SelectItem>
-                  {variantChoices.map((v) => (
-                    <SelectItem key={v} value={v}>
-                      {v}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="flex items-center gap-2 rounded-md border border-[#E7E5E0] bg-[#FAF9F6] px-2.5 py-1">
-              <Switch
-                id="gallery-favorites"
-                checked={favoriteOnly}
-                onCheckedChange={(checked) => {
-                  setOffset(0);
-                  setFavoriteOnly(checked);
-                }}
-              />
-              <Label
-                htmlFor="gallery-favorites"
-                className="cursor-pointer text-xs text-[#44403C]"
-              >
-                Favorites only
-              </Label>
-            </div>
+      {/* Minimal Filter Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#E5E0D6] pb-3">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div className="flex items-center gap-0.5 rounded-full border border-[#E5E0D6] bg-[#F2EFE9] p-0.5 text-xs">
+            <button
+              type="button"
+              onClick={() => {
+                setOffset(0);
+                setMineOnly(false);
+              }}
+              className={cn(
+                "rounded-full px-3 py-1 font-medium transition-colors",
+                !mineOnly
+                  ? "bg-[#FFFFFF] text-[#1A1D24]"
+                  : "text-[#62666F] hover:text-[#1A1D24]"
+              )}
+            >
+              {dict.gallery.allWorks}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setOffset(0);
+                setMineOnly(true);
+              }}
+              className={cn(
+                "rounded-full px-3 py-1 font-medium transition-colors",
+                mineOnly
+                  ? "bg-[#FFFFFF] text-[#1A1D24]"
+                  : "text-[#62666F] hover:text-[#1A1D24]"
+              )}
+            >
+              {dict.gallery.myWorks}
+            </button>
           </div>
 
-          <div className="flex items-center gap-3">
-            <span className="font-mono text-xs text-[#78716C] tabular-nums">
-              {total} {total === 1 ? "image" : "images"}
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => void fetchImages()}
-              disabled={loading}
-              className="h-8 text-xs"
+          <div className="w-36">
+            <Select
+              value={variantFilter}
+              onValueChange={(v) => {
+                setOffset(0);
+                setVariantFilter(v);
+              }}
             >
-              <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
-              Refresh
-            </Button>
+              <SelectTrigger className="h-8 rounded-full text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">
+                  {dict.gallery.allVariants}
+                </SelectItem>
+                {variantChoices.map((v) => (
+                  <SelectItem key={v} value={v}>
+                    {v}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex items-center gap-2 rounded-full border border-[#E5E0D6] bg-[#FFFFFF] px-3 py-1">
+            <Switch
+              id="gallery-favorites"
+              checked={favoriteOnly}
+              onCheckedChange={(checked) => {
+                setOffset(0);
+                setFavoriteOnly(checked);
+              }}
+            />
+            <Label
+              htmlFor="gallery-favorites"
+              className="cursor-pointer text-xs text-[#4A4E58]"
+            >
+              {dict.gallery.favoritesOnly}
+            </Label>
           </div>
         </div>
-      </Card>
+
+        <div className="flex items-center gap-3">
+          <span className="font-mono text-xs text-[#62666F] tabular-nums">
+            {interpolate(dict.gallery.imageCount, { count: total })}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void fetchImages()}
+            disabled={loading}
+            className="h-8 rounded-full text-xs"
+          >
+            <RefreshCw
+              className={cn("h-3.5 w-3.5", loading && "animate-spin")}
+            />
+            {dict.app.refresh}
+          </Button>
+        </div>
+      </div>
 
       {error && (
         <div
           role="alert"
-          className="flex items-start gap-2 rounded-md border border-[#E8C9C8] bg-[#FBF0F0] px-4 py-2.5 text-xs text-[#A84442]"
+          className="flex items-start gap-2 rounded-md border border-[#EBC1BC] bg-[#FDF0EE] px-4 py-2.5 text-xs text-[#B43B2E]"
         >
           <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
           <span>{error}</span>
         </div>
       )}
 
-      {/* Grid */}
+      {/* Edge-to-edge Artwork Showcase */}
       {!loading && images.length === 0 ? (
-        <Card className="flex min-h-[320px] flex-col items-center justify-center p-8 text-center">
-          <ImageIcon className="h-8 w-8 text-[#78716C]/70" />
-          <p className="mt-3 text-sm font-medium text-[#1C1917]">
-            No artworks match these filters
+        <div className="flex min-h-[360px] flex-col items-center justify-center rounded-lg border border-dashed border-[#D4CEC2] bg-[#FFFFFF] p-8 text-center">
+          <ImageIcon className="h-7 w-7 text-[#62666F]/70" />
+          <p className="mt-3 font-display text-base font-medium text-[#1A1D24]">
+            {dict.gallery.emptyTitle}
           </p>
-          <p className="mt-1 text-xs text-[#78716C]">
-            Generate new images in Studio or relax the filter toggles above.
+          <p className="mt-1 text-xs text-[#62666F]">
+            {dict.gallery.emptyDesc}
           </p>
-        </Card>
+        </div>
       ) : (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
           {images.map((img) => {
-            const canModify = img.user_id === user.id || user.role === "admin";
+            const canModify =
+              img.user_id === user.id || user.role === "admin";
             return (
-              <Card
+              <div
                 key={img.id}
-                className="group overflow-hidden transition-colors hover:border-[#D6D3CB]"
+                className="group relative aspect-[4/5] overflow-hidden rounded-lg border border-[#E5E0D6] bg-[#F2EFE9]"
               >
-                <div className="relative aspect-[4/5] bg-[#F5F3EE] overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setConfirmDeleteId(null);
+                    setSelectedImage(img);
+                  }}
+                  aria-label={`Open image ${img.id}`}
+                  className="block h-full w-full focus:outline-none"
+                >
+                  <img
+                    src={img.thumb_url}
+                    alt={img.meta.prompt || "Artwork"}
+                    loading="lazy"
+                    className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+                  />
+                </button>
+
+                {/* Top right favorite button */}
+                {canModify && (
                   <button
                     type="button"
-                    onClick={() => {
-                      setConfirmDeleteId(null);
-                      setSelectedImage(img);
-                    }}
-                    className="block h-full w-full focus:outline-none"
-                    aria-label={`Open image ${img.id}`}
+                    onClick={() => void handleToggleFavorite(img)}
+                    aria-label={
+                      img.is_favorite
+                        ? dict.gallery.favorited
+                        : dict.gallery.favorite
+                    }
+                    className={cn(
+                      "absolute right-2.5 top-2.5 inline-flex h-7 w-7 items-center justify-center rounded-full border transition-all",
+                      img.is_favorite
+                        ? "border-[#ECC5BD] bg-[#FDF1EE] text-[#C85642]"
+                        : "border-white/40 bg-[#1A1D24]/45 text-white opacity-0 group-hover:opacity-100 hover:bg-[#1A1D24]/70"
+                    )}
                   >
-                    <img
-                      src={img.thumb_url}
-                      alt={img.meta.prompt || "Generated artwork"}
-                      loading="lazy"
-                      className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
+                    <Heart
+                      className={cn(
+                        "h-3.5 w-3.5",
+                        img.is_favorite && "fill-current"
+                      )}
                     />
                   </button>
+                )}
 
-                  {canModify && (
-                    <button
-                      type="button"
-                      onClick={() => void handleToggleFavorite(img)}
-                      aria-label={
-                        img.is_favorite ? "Remove favorite" : "Favorite image"
-                      }
-                      className={cn(
-                        "absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded-full border transition-all",
-                        img.is_favorite
-                          ? "border-[#E8D0D3] bg-[#FAF1F2] text-[#B87E84]"
-                          : "border-[#E7E5E0]/80 bg-[#FFFFFF]/85 text-[#78716C] opacity-0 group-hover:opacity-100 hover:text-[#B87E84]"
-                      )}
-                    >
-                      <Heart
-                        className={cn(
-                          "h-3.5 w-3.5",
-                          img.is_favorite && "fill-current"
-                        )}
-                      />
-                    </button>
-                  )}
-
-                  <div className="pointer-events-none absolute bottom-2 left-2 flex items-center gap-1">
-                    <span
-                      className={cn(
-                        "h-2 w-2 rounded-full border border-white/80",
-                        img.upload_state === "uploaded" && "bg-[#3D7A5A]",
-                        img.upload_state === "pending" && "bg-[#9C6D2E]",
-                        img.upload_state === "failed" && "bg-[#A84442]"
-                      )}
-                      title={`Storage: ${img.upload_state}`}
-                    />
-                  </div>
-                </div>
-
-                <div className="px-3 py-2.5 space-y-1">
-                  <div className="flex items-center justify-between gap-1.5">
-                    <Badge variant="neutral" className="font-mono text-[10px] px-1.5 py-0">
-                      {img.variant}
-                    </Badge>
-                    <span className="font-mono text-[10px] text-[#78716C] tabular-nums">
+                {/* Hover metadata scrim */}
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col justify-end bg-gradient-to-t from-[#1A1D24]/80 via-[#1A1D24]/35 to-transparent p-3 pt-10 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
+                  <div className="flex items-center justify-between gap-2 text-[10px] font-mono text-white/90">
+                    <span>{img.variant}</span>
+                    <span className="tabular-nums">
                       {img.width}×{img.height}
                     </span>
                   </div>
-                  <p className="truncate text-[11px] text-[#44403C]">
-                    {img.meta.prompt || "Untitled"}
+                  <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-white">
+                    {img.meta.prompt}
                   </p>
                 </div>
-              </Card>
+              </div>
             );
           })}
         </div>
       )}
 
-      {/* Pagination */}
       {total > PAGE_LIMIT && (
-        <div className="flex items-center justify-between rounded-lg border border-[#E7E5E0] bg-[#FFFFFF] px-4 py-2.5 text-xs">
-          <span className="font-mono text-[#78716C] tabular-nums">
-            Showing {offset + 1}–{Math.min(offset + images.length, total)} of{" "}
-            {total}
+        <div className="flex items-center justify-between border-t border-[#E5E0D6] pt-3 text-xs">
+          <span className="font-mono text-[#62666F] tabular-nums">
+            {interpolate(dict.gallery.showingRange, {
+              from: offset + 1,
+              to: Math.min(offset + images.length, total),
+              total,
+            })}
           </span>
           <div className="flex gap-2">
             <Button
@@ -406,7 +388,7 @@ export function GalleryView({
               disabled={offset === 0}
               onClick={() => setOffset((o) => Math.max(0, o - PAGE_LIMIT))}
             >
-              Previous
+              {dict.gallery.prevPage}
             </Button>
             <Button
               variant="outline"
@@ -414,13 +396,13 @@ export function GalleryView({
               disabled={offset + PAGE_LIMIT >= total}
               onClick={() => setOffset((o) => o + PAGE_LIMIT)}
             >
-              Next
+              {dict.gallery.nextPage}
             </Button>
           </div>
         </div>
       )}
 
-      {/* Full-Resolution Modal Viewer + Metadata Drawer */}
+      {/* Full-Resolution Lightbox Modal */}
       <Dialog
         open={selectedImage !== null}
         onOpenChange={(open) => {
@@ -433,104 +415,114 @@ export function GalleryView({
         <DialogContent className="max-w-5xl p-0 overflow-hidden">
           {selectedImage && (
             <div className="grid max-h-[88vh] grid-cols-1 md:grid-cols-12">
-              <div className="flex items-center justify-center bg-[#F5F3EE] p-4 md:col-span-7 overflow-auto">
+              <div className="flex items-center justify-center bg-[#F2EFE9] p-4 md:col-span-7 overflow-auto">
                 <img
                   src={selectedImage.original_url}
-                  alt={selectedImage.meta.prompt || "Full resolution artwork"}
-                  className="max-h-[78vh] w-auto rounded border border-[#E7E5E0] object-contain shadow-xs"
+                  alt={selectedImage.meta.prompt || "Full resolution"}
+                  className="max-h-[78vh] w-auto rounded border border-[#E5E0D6] object-contain"
                 />
               </div>
 
-              <div className="flex flex-col justify-between border-t border-[#E7E5E0] bg-[#FFFFFF] md:col-span-5 md:border-l md:border-t-0 max-h-[88vh] overflow-y-auto">
+              <div className="flex flex-col justify-between border-t border-[#E5E0D6] bg-[#FFFFFF] md:col-span-5 md:border-l md:border-t-0 max-h-[88vh] overflow-y-auto">
                 <div className="space-y-4 p-5">
                   <DialogHeader className="border-0 p-0 pr-6">
                     <div className="flex flex-wrap items-center gap-2">
                       <DialogTitle className="font-mono text-sm">
                         {selectedImage.workflow_id}/{selectedImage.variant}
                       </DialogTitle>
-                      {uploadBadge(selectedImage.upload_state)}
+                      <Badge
+                        variant={
+                          selectedImage.upload_state === "uploaded"
+                            ? "sage"
+                            : selectedImage.upload_state === "failed"
+                            ? "vermilion"
+                            : "ochre"
+                        }
+                      >
+                        {dict.gallery.uploadState[selectedImage.upload_state]}
+                      </Badge>
                     </div>
                     <DialogDescription>
-                      by {selectedImage.username} ·{" "}
+                      {selectedImage.username} ·{" "}
                       {formatTimestamp(selectedImage.created_at)}
                     </DialogDescription>
                   </DialogHeader>
 
-                  <div className="space-y-1.5">
-                    <Label className="text-[11px] uppercase tracking-wider text-[#78716C]">
-                      Prompt
+                  <div className="space-y-1">
+                    <Label className="text-[11px] text-[#62666F]">
+                      {dict.gallery.prompt}
                     </Label>
-                    <p className="rounded-md border border-[#E7E5E0] bg-[#FAF9F6] p-2.5 text-xs leading-relaxed text-[#1C1917] whitespace-pre-wrap">
+                    <p className="rounded-md border border-[#E5E0D6] bg-[#FAF8F4] p-2.5 text-xs leading-relaxed text-[#1A1D24] whitespace-pre-wrap">
                       {selectedImage.meta.prompt}
                     </p>
                   </div>
 
                   {selectedImage.meta.negative_prompt && (
-                    <div className="space-y-1.5">
-                      <Label className="text-[11px] uppercase tracking-wider text-[#78716C]">
-                        Negative Prompt
+                    <div className="space-y-1">
+                      <Label className="text-[11px] text-[#62666F]">
+                        {dict.gallery.negativePrompt}
                       </Label>
-                      <p className="rounded-md border border-[#E7E5E0] bg-[#FAF9F6] p-2.5 text-xs leading-relaxed text-[#44403C] whitespace-pre-wrap">
+                      <p className="rounded-md border border-[#E5E0D6] bg-[#FAF8F4] p-2.5 text-xs leading-relaxed text-[#4A4E58] whitespace-pre-wrap">
                         {selectedImage.meta.negative_prompt}
                       </p>
                     </div>
                   )}
 
-                  <div className="grid grid-cols-2 gap-2.5 rounded-md border border-[#E7E5E0] bg-[#FAF9F6] p-3 text-xs">
+                  <div className="grid grid-cols-2 gap-2.5 rounded-md border border-[#E5E0D6] bg-[#FAF8F4] p-3 text-xs">
                     <div>
-                      <span className="block text-[10px] text-[#78716C]">
-                        Dimensions
+                      <span className="block text-[10px] text-[#62666F]">
+                        {dict.gallery.dimensions}
                       </span>
                       <span className="font-mono font-medium tabular-nums">
-                        {selectedImage.width} × {selectedImage.height}
+                        {selectedImage.width}×{selectedImage.height}
                       </span>
                     </div>
                     <div>
-                      <span className="block text-[10px] text-[#78716C]">
-                        Seed
+                      <span className="block text-[10px] text-[#62666F]">
+                        {dict.gallery.seed}
                       </span>
                       <button
                         type="button"
                         onClick={() => void handleCopySeed(selectedImage.seed)}
-                        className="inline-flex items-center gap-1 font-mono font-medium text-[#1C1917] hover:text-[#4A6580] tabular-nums"
+                        className="inline-flex items-center gap-1 font-mono font-medium text-[#1A1D24] hover:text-[#C85642] tabular-nums"
                       >
                         {selectedImage.seed}
                         {copiedSeed ? (
-                          <Check className="h-3 w-3 text-[#3D7A5A]" />
+                          <Check className="h-3 w-3 text-[#2F6F52]" />
                         ) : (
-                          <Copy className="h-3 w-3 text-[#78716C]" />
+                          <Copy className="h-3 w-3 text-[#62666F]" />
                         )}
                       </button>
                     </div>
                     <div>
-                      <span className="block text-[10px] text-[#78716C]">
-                        Steps / CFG
+                      <span className="block text-[10px] text-[#62666F]">
+                        {dict.gallery.stepsCfg}
                       </span>
                       <span className="font-mono font-medium tabular-nums">
-                        {selectedImage.meta.steps ?? "default"} /{" "}
-                        {selectedImage.meta.cfg ?? "default"}
+                        {selectedImage.meta.steps ?? "—"} /{" "}
+                        {selectedImage.meta.cfg ?? "—"}
                       </span>
                     </div>
                     <div>
-                      <span className="block text-[10px] text-[#78716C]">
-                        Sampler / Scheduler
+                      <span className="block text-[10px] text-[#62666F]">
+                        {dict.gallery.samplerScheduler}
                       </span>
                       <span className="font-mono font-medium">
-                        {selectedImage.meta.sampler_name ?? "default"} ·{" "}
-                        {selectedImage.meta.scheduler ?? "default"}
+                        {selectedImage.meta.sampler_name ?? "—"} ·{" "}
+                        {selectedImage.meta.scheduler ?? "—"}
                       </span>
                     </div>
                     <div>
-                      <span className="block text-[10px] text-[#78716C]">
-                        GPU Tier
+                      <span className="block text-[10px] text-[#62666F]">
+                        {dict.gallery.gpu}
                       </span>
                       <span className="font-mono font-medium">
                         {selectedImage.meta.gpu_type || "L4"}
                       </span>
                     </div>
                     <div>
-                      <span className="block text-[10px] text-[#78716C]">
-                        Storage
+                      <span className="block text-[10px] text-[#62666F]">
+                        {dict.gallery.storage}
                       </span>
                       <span className="font-mono font-medium">
                         {selectedImage.storage_backend}
@@ -540,13 +532,17 @@ export function GalleryView({
 
                   {selectedImage.meta.loras &&
                     selectedImage.meta.loras.length > 0 && (
-                      <div className="space-y-1.5">
-                        <Label className="text-[11px] uppercase tracking-wider text-[#78716C]">
-                          LoRAs
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-[#62666F]">
+                          {dict.gallery.loras}
                         </Label>
                         <div className="flex flex-wrap gap-1.5">
                           {selectedImage.meta.loras.map((l) => (
-                            <Badge key={l.filename} variant="slate" className="font-mono">
+                            <Badge
+                              key={l.filename}
+                              variant="slate"
+                              className="font-mono"
+                            >
                               {l.name || l.filename} @ {l.strength}
                             </Badge>
                           ))}
@@ -555,30 +551,40 @@ export function GalleryView({
                     )}
 
                   {selectedImage.upload_error && (
-                    <div className="rounded-md border border-[#E8C9C8] bg-[#FBF0F0] px-3 py-2 text-[11px] text-[#A84442]">
-                      Upload error (attempts: {selectedImage.upload_attempts}):{" "}
-                      {selectedImage.upload_error}
+                    <div className="rounded-md border border-[#EBC1BC] bg-[#FDF0EE] px-3 py-2 text-[11px] text-[#B43B2E]">
+                      {interpolate(dict.gallery.uploadError, {
+                        attempts: selectedImage.upload_attempts,
+                        error: selectedImage.upload_error,
+                      })}
                     </div>
                   )}
                 </div>
 
-                <div className="border-t border-[#E7E5E0] bg-[#FAF9F6] p-4 space-y-2.5">
+                <div className="border-t border-[#E5E0D6] bg-[#FAF8F4] p-4 space-y-2">
                   <Button
                     onClick={() => handleRemix(selectedImage)}
                     className="w-full"
                   >
                     <Sparkles />
-                    Remix in Studio
+                    {dict.gallery.remixInStudio}
                   </Button>
 
                   <div className="flex items-center gap-2">
-                    <Button variant="outline" size="sm" asChild className="flex-1">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      asChild
+                      className="flex-1"
+                    >
                       <a
                         href={selectedImage.original_url}
-                        download={`colab-canvas-${selectedImage.id.slice(0, 8)}.png`}
+                        download={`colab-canvas-${selectedImage.id.slice(
+                          0,
+                          8
+                        )}.png`}
                       >
                         <Download />
-                        Original PNG
+                        {dict.gallery.originalPng}
                       </a>
                     </Button>
 
@@ -588,16 +594,20 @@ export function GalleryView({
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => void handleToggleFavorite(selectedImage)}
+                          onClick={() =>
+                            void handleToggleFavorite(selectedImage)
+                          }
                         >
                           <Heart
                             className={cn(
                               "h-3.5 w-3.5",
                               selectedImage.is_favorite &&
-                                "fill-[#B87E84] text-[#B87E84]"
+                                "fill-[#C85642] text-[#C85642]"
                             )}
                           />
-                          {selectedImage.is_favorite ? "Favorited" : "Favorite"}
+                          {selectedImage.is_favorite
+                            ? dict.gallery.favorited
+                            : dict.gallery.favorite}
                         </Button>
 
                         {confirmDeleteId === selectedImage.id ? (
@@ -607,16 +617,20 @@ export function GalleryView({
                             disabled={deleting}
                             onClick={() => void handleDelete(selectedImage)}
                           >
-                            {deleting ? "Deleting..." : "Confirm"}
+                            {deleting
+                              ? dict.gallery.deleting
+                              : dict.app.confirm}
                           </Button>
                         ) : (
                           <Button
                             variant="destructiveOutline"
                             size="sm"
-                            onClick={() => setConfirmDeleteId(selectedImage.id)}
+                            onClick={() =>
+                              setConfirmDeleteId(selectedImage.id)
+                            }
                           >
                             <Trash2 />
-                            Delete
+                            {dict.app.delete}
                           </Button>
                         )}
                       </>

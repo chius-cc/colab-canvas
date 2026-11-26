@@ -1,6 +1,9 @@
 import type {
   AddAccountRequest,
   AdminUser,
+  AssistantChatRequest,
+  AssistantConfig,
+  AssistantStatusResponse,
   AuthMeResponse,
   AuthStatusResponse,
   AuthUser,
@@ -8,6 +11,8 @@ import type {
   CreateInviteRequest,
   CreateJobRequest,
   CreateLoraRequest,
+  FetchAssistantModelsRequest,
+  FetchAssistantModelsResponse,
   ImageListResponse,
   ImageRecord,
   InviteCode,
@@ -20,6 +25,7 @@ import type {
   ReconcileSummary,
   RegisterRequest,
   SetupRequest,
+  UpdateAssistantConfigRequest,
   WorkerRecord,
   WorkflowManifest,
 } from "@/types/api";
@@ -243,3 +249,121 @@ export const adminApi = {
       body: JSON.stringify(body),
     }),
 };
+
+export const assistantApi = {
+  status: () => apiFetch<AssistantStatusResponse>("/api/assistant/status"),
+  getConfig: () => apiFetch<{ config: AssistantConfig }>("/api/assistant/config"),
+  saveConfig: (body: UpdateAssistantConfigRequest) =>
+    apiFetch<{ config: AssistantConfig }>("/api/assistant/config", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  fetchModels: (body: FetchAssistantModelsRequest) =>
+    apiFetch<FetchAssistantModelsResponse>("/api/assistant/models", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+};
+
+export async function streamAssistantChat(
+  body: AssistantChatRequest,
+  callbacks: {
+    onDelta: (chunk: string) => void;
+    onDone?: (finishReason: string | null) => void;
+    onError: (message: string) => void;
+    signal?: AbortSignal;
+  }
+): Promise<void> {
+  const resp = await fetch("/api/assistant/chat", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: callbacks.signal,
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text();
+    let parsed: unknown = text;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      // Plain text error
+    }
+    throw new ApiError(
+      resp.status,
+      extractErrorMessage(parsed, `Request failed with HTTP ${resp.status}`)
+    );
+  }
+
+  if (!resp.body) {
+    throw new ApiError(500, "Empty response stream from assistant endpoint");
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let doneCalled = false;
+
+  const processEventBlock = (rawBlock: string) => {
+    const lines = rawBlock.split(/\r?\n/);
+    let eventName = "message";
+    const dataLines: string[] = [];
+
+    for (const line of lines) {
+      if (!line || line.startsWith(":")) continue;
+      if (line.startsWith("event:")) {
+        eventName = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trimStart());
+      }
+    }
+
+    if (dataLines.length === 0) return;
+    const dataStr = dataLines.join("\n");
+
+    let payload: Record<string, unknown> = {};
+    try {
+      payload = JSON.parse(dataStr) as Record<string, unknown>;
+    } catch {
+      if (eventName === "delta") {
+        callbacks.onDelta(dataStr);
+      }
+      return;
+    }
+
+    if (eventName === "delta") {
+      if (typeof payload.content === "string" && payload.content.length > 0) {
+        callbacks.onDelta(payload.content);
+      }
+    } else if (eventName === "done") {
+      doneCalled = true;
+      callbacks.onDone?.(
+        typeof payload.finish_reason === "string" ? payload.finish_reason : null
+      );
+    } else if (eventName === "error") {
+      callbacks.onError(
+        typeof payload.message === "string" ? payload.message : "Assistant error"
+      );
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split(/\r?\n\r?\n/);
+    buffer = parts.pop() ?? "";
+    for (const part of parts) {
+      processEventBlock(part);
+    }
+  }
+
+  if (buffer.trim()) {
+    processEventBlock(buffer);
+  }
+
+  if (!doneCalled) {
+    callbacks.onDone?.(null);
+  }
+}

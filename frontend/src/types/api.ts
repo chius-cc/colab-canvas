@@ -6,22 +6,19 @@ export const ALLOWED_GPU_TIERS: readonly GpuTier[] = ["L4", "A100", "G4"] as con
 
 export const GPU_TIER_META: Record<
   GpuTier,
-  { label: string; vram: string; note: string }
+  { label: string; vram: string }
 > = {
   L4: {
     label: "NVIDIA L4",
     vram: "24 GB",
-    note: "Default BF16 studio tier (~1.54 CU/h)",
   },
   A100: {
     label: "NVIDIA A100",
     vram: "40/80 GB",
-    note: "High-throughput tier (admin granted)",
   },
   G4: {
     label: "NVIDIA G4",
     vram: "24+ GB",
-    note: "Extended Colab accelerator (admin granted)",
   },
 };
 
@@ -364,7 +361,24 @@ export interface PatchUserRequest {
   allowed_gpus?: GpuTier[];
 }
 
-export interface RemixDraft {
+export interface StudioDraft {
+  workflow_id?: string;
+  variant?: string;
+  prompt: string;
+  negative_prompt?: string;
+  width?: number;
+  height?: number;
+  steps?: number;
+  cfg?: number;
+  sampler_name?: string;
+  scheduler?: string;
+  seed?: number | null;
+  loras?: Array<{ id?: string; filename?: string; name?: string; strength: number }>;
+  gpu_type?: string;
+  sourceLabel?: string;
+}
+
+export interface StudioContextSnapshot {
   workflow_id: string;
   variant: string;
   prompt: string;
@@ -375,10 +389,9 @@ export interface RemixDraft {
   cfg: number;
   sampler_name: string;
   scheduler: string;
-  seed: number;
-  loras: Array<{ id?: string; filename: string; name?: string; strength: number }>;
-  gpu_type: string;
-  sourceImageId: string;
+  batch_size: number;
+  gpu_type: GpuTier;
+  loras: LoraInput[];
 }
 
 export type SseConnectionState = "connecting" | "live" | "reconnecting" | "offline";
@@ -429,4 +442,79 @@ export interface ImageUploadedEvent {
 export interface ImageUploadFailedEvent {
   image_id: string;
   error: string;
+}
+
+// Assistant / Copilot API types
+export interface AssistantStatusResponse {
+  enabled: boolean;
+  configured: boolean;
+  model: string | null;
+}
+
+export interface AssistantConfig {
+  enabled: boolean;
+  base_url: string;
+  has_api_key: boolean;
+  api_key_masked: string | null;
+  model: string;
+  system_prompt: string;
+  temperature: number;
+  max_tokens: number;
+  updated_at: string | null;
+}
+
+export interface UpdateAssistantConfigRequest {
+  enabled: boolean;
+  base_url: string;
+  api_key?: string;
+  clear_api_key?: boolean;
+  model: string;
+  system_prompt?: string;
+  temperature?: number;
+  max_tokens?: number;
+}
+
+export interface FetchAssistantModelsRequest {
+  base_url?: string;
+  api_key?: string;
+  clear_api_key?: boolean;
+}
+
+export type FetchAssistantModelsResponse =
+  | { ok: true; latency_ms: number; models: string[] }
+  | { ok: false; status_code: number | null; error: string };
+
+export type AssistantChatMode = "chat" | "polish" | "variations" | "diagnose";
+
+export interface AssistantChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface AssistantChatRequest {
+  messages: AssistantChatMessage[];
+  locale: "zh" | "en";
+  mode: AssistantChatMode;
+  studio_context?: Record<string, unknown> | null;
+}
+
+export interface CanvasRecipe {
+  title?: string;
+  prompt: string;
+  negative_prompt?: string;
+  variant?: string;
+  width?: number;
+  height?: number;
+  steps?: number;
+  cfg?: number;
+  loras?: Array<{ id: string; strength?: number }>;
+}
+
+export interface ChatThreadMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  error?: string;
+  streaming?: boolean;
+  generatedJobs?: Record<number, string>;
 }

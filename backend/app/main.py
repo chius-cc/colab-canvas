@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.api.admin import router as admin_router
+from app.api.assistant import router as assistant_router
 from app.api.auth import router as auth_router
 from app.api.events import EventBus
 from app.api.events import router as events_router
@@ -141,14 +142,15 @@ def create_app(
             await uploader.stop()
             await db.close()
 
-    app = FastAPI(title="colab-canvas", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="colab-canvas", version="0.2.0", lifespan=lifespan)
 
     @app.get("/api/health", tags=["health"])
     async def health() -> dict[str, str]:
-        return {"status": "ok", "version": "0.1.0"}
+        return {"status": "ok", "version": "0.2.0"}
 
     app.include_router(auth_router)
     app.include_router(admin_router)
+    app.include_router(assistant_router)
     app.include_router(workflows_router)
     app.include_router(loras_router)
     app.include_router(images_router)

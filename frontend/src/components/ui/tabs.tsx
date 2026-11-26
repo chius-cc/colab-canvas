@@ -11,7 +11,7 @@ export function TabsList({
   return (
     <TabsPrimitive.List
       className={cn(
-        "inline-flex items-center rounded-md border border-[#E7E5E0] bg-[#F5F3EE] p-0.5 text-[#78716C]",
+        "inline-flex items-center rounded-md border border-[#E5E0D6] bg-[#F2EFE9] p-0.5 text-[#62666F]",
         className
       )}
       {...props}
@@ -26,7 +26,7 @@ export function TabsTrigger({
   return (
     <TabsPrimitive.Trigger
       className={cn(
-        "inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-sm px-3 py-1.5 text-xs font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#4A6580]/30 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-[#FFFFFF] data-[state=active]:text-[#1C1917] data-[state=active]:shadow-[0_1px_2px_rgba(28,25,23,0.06)]",
+        "inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-sm px-3 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#C85642]/30 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-[#FFFFFF] data-[state=active]:text-[#1A1D24]",
         className
       )}
       {...props}
@@ -40,7 +40,7 @@ export function TabsContent({
 }: React.ComponentProps<typeof TabsPrimitive.Content>) {
   return (
     <TabsPrimitive.Content
-      className={cn("mt-3 focus-visible:outline-none", className)}
+      className={cn("mt-4 focus-visible:outline-none", className)}
       {...props}
     />
   );

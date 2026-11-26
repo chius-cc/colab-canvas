@@ -1,4 +1,13 @@
-import { Cpu, Images, LogOut, Radio, Sparkles, Wand2 } from "lucide-react";
+import {
+  Images,
+  LogOut,
+  MessageSquareText,
+  Radio,
+  SlidersHorizontal,
+  Stamp,
+  Wand2,
+} from "lucide-react";
+import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type { AuthMode, AuthUser, SseConnectionState } from "@/types/api";
 import { Badge } from "@/components/ui/badge";
@@ -9,7 +18,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-export type AppRoute = "studio" | "gallery" | "pool";
+export type AppRoute = "chat" | "studio" | "gallery" | "pool";
 
 interface TopShellProps {
   route: AppRoute;
@@ -22,17 +31,6 @@ interface TopShellProps {
   activeJobCount: number;
 }
 
-const NAV_ITEMS: Array<{
-  id: AppRoute;
-  label: string;
-  href: string;
-  icon: typeof Wand2;
-}> = [
-  { id: "studio", label: "Studio", href: "#studio", icon: Wand2 },
-  { id: "gallery", label: "Gallery", href: "#gallery", icon: Images },
-  { id: "pool", label: "Pool & Admin", href: "#pool", icon: Cpu },
-];
-
 export function TopShell({
   route,
   onNavigate,
@@ -43,47 +41,54 @@ export function TopShell({
   onLogout,
   activeJobCount,
 }: TopShellProps) {
-  const quotaPct =
-    user.daily_quota > 0
-      ? Math.min(100, Math.round((user.used_today / user.daily_quota) * 100))
-      : 0;
+  const { locale, setLocale, dict } = useI18n();
+
+  const navItems: Array<{
+    id: AppRoute;
+    label: string;
+    href: string;
+    icon: typeof Wand2;
+  }> = [
+    { id: "chat", label: dict.nav.inspire, href: "#chat", icon: MessageSquareText },
+    { id: "studio", label: dict.nav.studio, href: "#studio", icon: Wand2 },
+    { id: "gallery", label: dict.nav.gallery, href: "#gallery", icon: Images },
+    { id: "pool", label: dict.nav.console, href: "#pool", icon: SlidersHorizontal },
+  ];
 
   const sseLabel =
     sseState === "live"
-      ? "Live"
+      ? dict.shell.sseLive
       : sseState === "reconnecting"
-      ? "Reconnecting"
+      ? dict.shell.sseReconnecting
       : sseState === "connecting"
-      ? "Connecting"
-      : "Offline";
+      ? dict.shell.sseConnecting
+      : dict.shell.sseOffline;
 
   return (
-    <header className="sticky top-0 z-30 border-b border-[#E7E5E0] bg-[#FFFFFF]/95 backdrop-blur-sm">
+    <header className="sticky top-0 z-30 border-b border-[#E5E0D6] bg-[#FAF8F4]/95 backdrop-blur-sm">
       <div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-3 px-4 py-2.5 sm:px-6">
-        <div className="flex items-center gap-5">
+        <div className="flex flex-wrap items-center gap-4 sm:gap-6">
           <a
             href="#studio"
             onClick={(e) => {
               e.preventDefault();
               onNavigate("studio");
             }}
-            className="flex items-center gap-2.5 text-[#1C1917] hover:opacity-85 transition-opacity"
+            className="flex items-center gap-2 text-[#1A1D24] hover:opacity-85 transition-opacity"
           >
-            <span className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[#E7E5E0] bg-[#FAF9F6]">
-              <Sparkles className="h-4 w-4 text-[#4A6580]" />
+            <span className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[#ECC5BD] bg-[#FDF1EE] text-[#C85642]">
+              <Stamp className="h-4 w-4" />
             </span>
-            <div className="leading-tight">
-              <span className="block text-sm font-semibold tracking-tight">
-                colab-canvas
-              </span>
-              <span className="block text-[10px] text-[#78716C] tracking-wide">
-                SOFT STUDIO · BYO COLAB
-              </span>
-            </div>
+            <span className="font-display text-base font-semibold tracking-tight">
+              {dict.app.brand}
+            </span>
           </a>
 
-          <nav aria-label="Primary navigation" className="flex items-center gap-1 rounded-md border border-[#E7E5E0] bg-[#FAF9F6] p-0.5">
-            {NAV_ITEMS.map((item) => {
+          <nav
+            aria-label="Primary navigation"
+            className="flex items-center gap-1 rounded-full border border-[#E5E0D6] bg-[#F2EFE9] p-0.5"
+          >
+            {navItems.map((item) => {
               const Icon = item.icon;
               const active = route === item.id;
               return (
@@ -96,16 +101,16 @@ export function TopShell({
                   }}
                   aria-current={active ? "page" : undefined}
                   className={cn(
-                    "inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-medium transition-colors",
+                    "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
                     active
-                      ? "bg-[#FFFFFF] text-[#1C1917] shadow-[0_1px_2px_rgba(28,25,23,0.06)]"
-                      : "text-[#78716C] hover:text-[#1C1917]"
+                      ? "bg-[#FFFFFF] text-[#1A1D24]"
+                      : "text-[#62666F] hover:text-[#1A1D24]"
                   )}
                 >
                   <Icon className="h-3.5 w-3.5" />
                   <span>{item.label}</span>
                   {item.id === "studio" && activeJobCount > 0 && (
-                    <span className="ml-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-[#4A6580] px-1 text-[10px] font-semibold text-white tabular-nums">
+                    <span className="ml-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-[#C85642] px-1 text-[10px] font-semibold text-white tabular-nums">
                       {activeJobCount}
                     </span>
                   )}
@@ -115,7 +120,39 @@ export function TopShell({
           </nav>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5 sm:gap-3">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
+          {/* Locale Switcher */}
+          <div
+            className="inline-flex items-center rounded-full border border-[#E5E0D6] bg-[#F2EFE9] p-0.5 text-[11px]"
+            role="group"
+            aria-label={dict.shell.langToggleTooltip}
+          >
+            <button
+              type="button"
+              onClick={() => setLocale("zh")}
+              className={cn(
+                "rounded-full px-2 py-0.5 font-medium transition-colors",
+                locale === "zh"
+                  ? "bg-[#FFFFFF] text-[#1A1D24]"
+                  : "text-[#62666F] hover:text-[#1A1D24]"
+              )}
+            >
+              中
+            </button>
+            <button
+              type="button"
+              onClick={() => setLocale("en")}
+              className={cn(
+                "rounded-full px-2 py-0.5 font-medium transition-colors",
+                locale === "en"
+                  ? "bg-[#FFFFFF] text-[#1A1D24]"
+                  : "text-[#62666F] hover:text-[#1A1D24]"
+              )}
+            >
+              EN
+            </button>
+          </div>
+
           <Tooltip>
             <TooltipTrigger asChild>
               <button
@@ -124,74 +161,53 @@ export function TopShell({
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
                   sseState === "live" &&
-                    "border-[#C5DFD0] bg-[#EEF6F1] text-[#3D7A5A]",
+                    "border-[#BBD8C9] bg-[#ECF5F0] text-[#2F6F52]",
                   (sseState === "connecting" || sseState === "reconnecting") &&
-                    "border-[#E8D7B8] bg-[#FBF5EA] text-[#9C6D2E]",
+                    "border-[#E5D0AD] bg-[#FBF4E8] text-[#8D5B1B]",
                   sseState === "offline" &&
-                    "border-[#E8C9C8] bg-[#FBF0F0] text-[#A84442]"
+                    "border-[#EBC1BC] bg-[#FDF0EE] text-[#B43B2E]"
                 )}
               >
                 <span
                   className={cn(
                     "h-1.5 w-1.5 rounded-full",
-                    sseState === "live" && "bg-[#3D7A5A]",
+                    sseState === "live" && "bg-[#2F6F52]",
                     (sseState === "connecting" || sseState === "reconnecting") &&
-                      "bg-[#9C6D2E] animate-pulse",
-                    sseState === "offline" && "bg-[#A84442]"
+                      "bg-[#8D5B1B] animate-pulse",
+                    sseState === "offline" && "bg-[#B43B2E]"
                   )}
                 />
                 <Radio className="h-3 w-3" />
-                <span>SSE {sseLabel}</span>
+                <span>{sseLabel}</span>
               </button>
             </TooltipTrigger>
-            <TooltipContent>
-              Real-time `/api/events` stream ({sseLabel}). Click to reconnect.
-            </TooltipContent>
+            <TooltipContent>{dict.shell.sseTooltip}</TooltipContent>
           </Tooltip>
 
-          <div className="flex items-center gap-2.5 rounded-md border border-[#E7E5E0] bg-[#FAF9F6] px-2.5 py-1">
-            <div className="flex flex-col min-w-[96px]">
-              <div className="flex items-center justify-between gap-2 text-[10px] text-[#78716C]">
-                <span>Daily Quota</span>
-                <span className="font-mono font-medium text-[#1C1917] tabular-nums">
-                  {user.daily_quota > 0
-                    ? `${user.used_today}/${user.daily_quota}`
-                    : `${user.used_today} / ∞`}
-                </span>
-              </div>
-              <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-[#E7E5E0]">
-                <div
-                  className={cn(
-                    "h-full rounded-full transition-all",
-                    user.daily_quota > 0 && quotaPct >= 90
-                      ? "bg-[#A84442]"
-                      : "bg-[#4A6580]"
-                  )}
-                  style={{
-                    width:
-                      user.daily_quota > 0 ? `${Math.max(4, quotaPct)}%` : "18%",
-                  }}
-                />
-              </div>
-            </div>
-            <span className="h-5 w-px bg-[#E7E5E0]" />
-            <div className="text-[11px] text-[#44403C] tabular-nums">
-              Queue{" "}
-              <span className="font-mono font-medium text-[#1C1917]">
+          <div className="hidden md:flex items-center gap-2 rounded-full border border-[#E5E0D6] bg-[#FFFFFF] px-3 py-1 text-[11px] text-[#4A4E58] tabular-nums">
+            <span>
+              {dict.shell.quotaLabel}{" "}
+              <strong className="font-mono text-[#1A1D24]">
+                {user.daily_quota > 0
+                  ? `${user.used_today}/${user.daily_quota}`
+                  : `${user.used_today}/∞`}
+              </strong>
+            </span>
+            <span className="h-3 w-px bg-[#E5E0D6]" />
+            <span>
+              {dict.shell.queueLabel}{" "}
+              <strong className="font-mono text-[#1A1D24]">
                 {user.active_queued}/{user.max_queued}
-              </span>
-            </div>
+              </strong>
+            </span>
           </div>
 
           <div className="flex items-center gap-2">
-            <div className="text-right leading-tight hidden sm:block">
-              <div className="text-xs font-medium text-[#1C1917]">
-                {user.username}
-              </div>
-              <div className="text-[10px] text-[#78716C]">{user.email}</div>
-            </div>
+            <span className="hidden sm:inline text-xs font-medium text-[#1A1D24]">
+              {user.username}
+            </span>
             <Badge variant={user.role === "admin" ? "slate" : "neutral"}>
-              {user.role}
+              {user.role === "admin" ? dict.shell.roleAdmin : dict.shell.roleMember}
             </Badge>
             {authMode !== "cloudflare" && (
               <Tooltip>
@@ -200,14 +216,14 @@ export function TopShell({
                     variant="outline"
                     size="sm"
                     onClick={() => void onLogout()}
-                    aria-label="Sign out"
-                    className="h-8 px-2.5 text-xs"
+                    aria-label={dict.shell.logout}
+                    className="h-7 rounded-full px-2.5 text-xs"
                   >
                     <LogOut className="h-3.5 w-3.5" />
-                    <span className="hidden md:inline">Logout</span>
+                    <span className="hidden lg:inline">{dict.shell.logout}</span>
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent>Sign out of local session</TooltipContent>
+                <TooltipContent>{dict.shell.logout}</TooltipContent>
               </Tooltip>
             )}
           </div>

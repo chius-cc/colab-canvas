@@ -25,6 +25,7 @@ __pycache__/
 
 # Generated media
 *.png
+!frontend/public/*.png
 *.webp
 
 # Node / OS

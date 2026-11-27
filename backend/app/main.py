@@ -143,11 +143,11 @@ def create_app(
             await uploader.stop()
             await db.close()
 
-    app = FastAPI(title="Colab Canvas", version="0.2.2", lifespan=lifespan)
+    app = FastAPI(title="Colab Canvas", version="0.2.3", lifespan=lifespan)
 
     @app.get("/api/health", tags=["health"])
     async def health() -> dict[str, str]:
-        return {"status": "ok", "version": "0.2.2"}
+        return {"status": "ok", "version": "0.2.3"}
 
     app.include_router(auth_router)
     app.include_router(admin_router)

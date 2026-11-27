@@ -1,7 +1,7 @@
 # `colab-canvas` 系统架构设计
 
 > **项目定位**：Bring Your Own Paid Colab Accounts — Self-Hosted AI Art Studio & Colab GPU Pool
-> **代码仓库**：`github.com/chius-me/colab-canvas`
+> **代码仓库**：`github.com/chius-n/colab-canvas`
 > **文档状态**：MVP v0.1 架构 · rev.2（已按 `google-colab-cli` 0.8.0 源码审计修订，待 Phase 0 实测回填）
 
 ---

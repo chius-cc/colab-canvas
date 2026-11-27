@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ${COLAB_CANVAS_IMAGE:-ghcr.io/chius-me/colab-canvas:latest}
+    image: ${COLAB_CANVAS_IMAGE:-ghcr.io/chius-n/colab-canvas:latest}
     restart: unless-stopped
     init: true
     ports:

@@ -53,6 +53,10 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     document.documentElement.lang = locale === "zh" ? "zh-CN" : "en";
+    document.title =
+      locale === "zh"
+        ? "Colab Canvas · AI 艺术画室"
+        : "Colab Canvas · AI Art Atelier";
     try {
       window.localStorage.setItem(LOCALE_STORAGE_KEY, locale);
     } catch {

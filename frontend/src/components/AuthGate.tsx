@@ -5,12 +5,12 @@ import {
   KeyRound,
   RefreshCw,
   ShieldCheck,
-  Stamp,
   UserPlus,
 } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { ApiError, authApi } from "@/lib/api";
 import type { AuthMode, AuthUser } from "@/types/api";
+import { BrandMark } from "@/components/BrandMark";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -185,10 +185,8 @@ export function AuthGate({
       </div>
 
       <div className="mx-auto w-full max-w-[400px] space-y-6 my-auto">
-        <div className="flex flex-col items-center text-center space-y-2">
-          <div className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-[#ECC5BD] bg-[#FDF1EE] text-[#C85642]">
-            <Stamp className="h-5 w-5" />
-          </div>
+        <div className="flex flex-col items-center text-center space-y-2.5">
+          <BrandMark className="h-11 w-11 shadow-sm" />
           <h1 className="font-display text-2xl font-semibold tracking-tight text-[#1A1D24]">
             {dict.app.brand}
           </h1>

@@ -40,12 +40,14 @@ import {
 } from "@/components/pool/PoolAdminView";
 import { InspireView } from "@/components/assistant/InspireView";
 import { FloatingCopilot } from "@/components/assistant/FloatingCopilot";
+import { AccountView } from "@/components/account/AccountView";
 
 function parseHashRoute(): AppRoute {
   const raw = window.location.hash.replace(/^#\/?/, "").toLowerCase();
   if (raw === "chat") return "chat";
   if (raw === "gallery") return "gallery";
   if (raw === "pool") return "pool";
+  if (raw === "account") return "account";
   return "studio";
 }
 
@@ -126,14 +128,23 @@ export function App() {
     setLoras(res.loras);
   }, []);
 
-  const refreshPool = useCallback(async () => {
-    const [accRes, wrkRes] = await Promise.all([
-      poolApi.listAccounts(),
-      poolApi.listWorkers(),
-    ]);
-    setAccounts(accRes.accounts);
-    setWorkers(wrkRes.workers);
-  }, []);
+  const refreshPool = useCallback(
+    async (roleOverride?: AuthUser["role"]) => {
+      const role = roleOverride ?? user?.role;
+      if (role !== "admin") {
+        setAccounts([]);
+        setWorkers([]);
+        return;
+      }
+      const [accRes, wrkRes] = await Promise.all([
+        poolApi.listAccounts(),
+        poolApi.listWorkers(),
+      ]);
+      setAccounts(accRes.accounts);
+      setWorkers(wrkRes.workers);
+    },
+    [user?.role]
+  );
 
   const refreshAssistantStatus = useCallback(async () => {
     try {
@@ -144,13 +155,14 @@ export function App() {
     }
   }, []);
 
-  const loadWorkspaceData = useCallback(async () => {
+  const loadWorkspaceData = useCallback(async (role: AuthUser["role"]) => {
+    const isAdmin = role === "admin";
     const [wfRes, loraRes, jobRes, accRes, wrkRes, aiRes] = await Promise.all([
       workflowsApi.list(),
       lorasApi.list(),
       jobsApi.list({ limit: 50 }),
-      poolApi.listAccounts(),
-      poolApi.listWorkers(),
+      isAdmin ? poolApi.listAccounts() : Promise.resolve({ accounts: [] }),
+      isAdmin ? poolApi.listWorkers() : Promise.resolve({ workers: [] }),
       assistantApi.status().catch(() => null),
     ]);
     setWorkflows(wfRes.workflows);
@@ -170,7 +182,7 @@ export function App() {
       setAuthMode(me.auth_mode);
       setNeedsSetup(false);
       setUser(me.user);
-      await loadWorkspaceData();
+      await loadWorkspaceData(me.user.role);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         setUser(null);
@@ -202,13 +214,19 @@ export function App() {
     void bootstrapAuth();
   }, [bootstrapAuth]);
 
+  useEffect(() => {
+    if (user && user.role !== "admin" && route === "pool") {
+      navigate("account");
+    }
+  }, [user, route, navigate]);
+
   const handleAuthenticated = useCallback(
     async (authedUser: AuthUser, mode: AuthMode) => {
       setUser(authedUser);
       setAuthMode(mode);
       setNeedsSetup(false);
       setAuthError(null);
-      await loadWorkspaceData();
+      await loadWorkspaceData(authedUser.role);
     },
     [loadWorkspaceData]
   );
@@ -291,10 +309,14 @@ export function App() {
         }
       },
       onWorkerUpdated: () => {
-        void poolApi.listWorkers().then((res) => setWorkers(res.workers));
+        if (user?.role === "admin") {
+          void poolApi.listWorkers().then((res) => setWorkers(res.workers));
+        }
       },
       onPoolUpdated: () => {
-        void refreshPool();
+        if (user?.role === "admin") {
+          void refreshPool("admin");
+        }
       },
       onPoolGpuUnavailable: (ev) => {
         setGpuWarning(
@@ -693,7 +715,7 @@ export function App() {
             />
           )}
 
-          {route === "pool" && (
+          {route === "pool" && user.role === "admin" && (
             <PoolAdminView
               user={user}
               workers={workers}
@@ -701,10 +723,14 @@ export function App() {
               loras={loras}
               activeTab={consoleTab}
               onTabChange={setConsoleTab}
-              onPoolChanged={refreshPool}
+              onPoolChanged={() => refreshPool(user.role)}
               onLorasChanged={refreshLoras}
               onAssistantConfigSaved={refreshAssistantStatus}
             />
+          )}
+
+          {(route === "account" || (route === "pool" && user.role !== "admin")) && (
+            <AccountView user={user} />
           )}
         </main>
 

@@ -256,3 +256,50 @@ async def test_reconciler_preserves_external_sessions_and_cleans_orphans(tmp_pat
         stop_ext = await client.post(f"/api/pool/workers/{ext_id}/stop")
         assert stop_ext.status_code == 403
         assert gw.unassigned_endpoints == ["managed-orphan-l4"]
+
+        # Members must not see Colab accounts, workers, or admin_only pool SSE events
+        inv = (await client.post("/api/admin/invites", json={"max_uses": 1})).json()["invite"][
+            "code"
+        ]
+        await client.post("/api/auth/logout")
+        reg = await client.post(
+            "/api/auth/register",
+            json={
+                "invite_code": inv,
+                "email": "member@example.com",
+                "username": "member",
+                "password": "memberpassword123",
+            },
+        )
+        assert reg.status_code == 201
+        assert (await client.get("/api/pool/accounts")).status_code == 403
+        assert (await client.get("/api/pool/workers")).status_code == 403
+
+        member_id = reg.json()["user"]["id"]
+        from app.auth.service import UserRecord
+
+        member_rec = UserRecord(
+            id=member_id,
+            email="member@example.com",
+            username="member",
+            role="member",
+            daily_quota=50,
+            max_queued=2,
+            allowed_gpus=("L4",),
+            created_at="",
+        )
+        ev_id_admin = await app.state.events.publish(
+            "worker.updated", {"worker_id": "w1", "status": "ready"}, admin_only=True
+        )
+        ev_id_public = await app.state.events.publish(
+            "image.created", {"image_id": "img-1"}, user_id=member_id
+        )
+        chunks: list[str] = []
+        sub = app.state.events.subscribe(
+            member_rec, last_event_id=ev_id_admin - 1, heartbeat_seconds=0.05, max_events=1
+        )
+        async for ch in sub:
+            chunks.append(ch)
+        assert len(chunks) == 1
+        assert f"id: {ev_id_public}" in chunks[0]
+        assert "worker.updated" not in chunks[0]

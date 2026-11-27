@@ -117,7 +117,7 @@ class AccountPool:
             ),
         )
         account = await self.get_account(account_id)
-        await self.events.publish("pool.updated", {"reason": "account_added"})
+        await self.events.publish("pool.updated", {"reason": "account_added"}, admin_only=True)
         return account
 
     async def list_accounts(self) -> list[dict[str, Any]]:
@@ -182,7 +182,7 @@ class AccountPool:
             (new_label, new_priority, new_min, new_enabled, new_unsupported, account_id),
         )
         updated = await self.get_account(account_id)
-        await self.events.publish("pool.updated", {"reason": "account_updated"})
+        await self.events.publish("pool.updated", {"reason": "account_updated"}, admin_only=True)
         return updated
 
     async def delete_account(self, account_id: str) -> None:
@@ -213,7 +213,7 @@ class AccountPool:
         await self.db.execute("DELETE FROM workers WHERE account_id = ?", (account_id,))
         await self.db.execute("DELETE FROM colab_accounts WHERE id = ?", (account_id,))
         shutil.rmtree(home_dir.parent, ignore_errors=True)
-        await self.events.publish("pool.updated", {"reason": "account_deleted"})
+        await self.events.publish("pool.updated", {"reason": "account_deleted"}, admin_only=True)
 
     async def mark_gpu_unsupported(self, account_id: str, gpu_type: str) -> None:
         acc = await self.get_account(account_id)
@@ -253,7 +253,7 @@ class AccountPool:
                     (now, account_id),
                 )
         accounts = await self.list_accounts()
-        await self.events.publish("pool.updated", {"reason": "balances_refreshed"})
+        await self.events.publish("pool.updated", {"reason": "balances_refreshed"}, admin_only=True)
         return accounts
 
     async def select_candidates(self, gpu_type: str = "L4") -> list[dict[str, Any]]:

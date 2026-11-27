@@ -47,6 +47,7 @@ export interface AuthUser {
   max_queued: number;
   active_queued: number;
   allowed_gpus: GpuTier[];
+  has_password?: boolean;
   created_at: string;
 }
 
@@ -58,6 +59,7 @@ export interface AdminUser {
   daily_quota: number;
   max_queued: number;
   allowed_gpus: GpuTier[];
+  has_password?: boolean;
   created_at: string;
 }
 

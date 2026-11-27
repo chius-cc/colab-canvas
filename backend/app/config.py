@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     allow_a100_fallback: bool = False
     civitai_api_token: str = ""
     colab_assign_retries: int = 4
+    colab_http_proxy: str = ""
 
     workflows_dir: Path = Path("./workflows")
     scripts_dir: Path = Path("./scripts")

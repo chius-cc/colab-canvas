@@ -10,6 +10,7 @@ from app.auth.service import (
     QuotaService,
     UserRecord,
     authenticate_local,
+    change_local_password,
     count_users,
     register_with_invite,
     setup_first_admin,
@@ -43,6 +44,11 @@ class RegisterRequest(BaseModel):
     password: str = Field(..., min_length=8, max_length=128)
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(..., min_length=1, max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
 def _serialize_user(user: UserRecord, *, used_today: int, active_queued: int) -> dict:
     return {
         "id": user.id,
@@ -54,6 +60,7 @@ def _serialize_user(user: UserRecord, *, used_today: int, active_queued: int) ->
         "max_queued": user.max_queued,
         "active_queued": active_queued,
         "allowed_gpus": list(user.allowed_gpus),
+        "has_password": user.has_password,
         "created_at": user.created_at,
     }
 
@@ -194,4 +201,19 @@ async def logout(
     settings: Settings = Depends(get_settings),
 ) -> dict:
     clear_session_cookie(response, secure=settings.cookie_secure)
+    return {"ok": True}
+
+
+@router.post("/change-password")
+async def change_password(
+    body: ChangePasswordRequest,
+    user: UserRecord = Depends(get_current_user),
+    db: Database = Depends(get_db),
+) -> dict[str, bool]:
+    await change_local_password(
+        db,
+        user_id=user.id,
+        current_password=body.current_password,
+        new_password=body.new_password,
+    )
     return {"ok": True}

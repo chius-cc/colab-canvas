@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel, Field
 
-from app.auth.deps import get_current_user, get_db, require_admin
+from app.auth.deps import get_db, require_admin
 from app.auth.service import UserRecord
 from app.colab.account_pool import AccountPool
 from app.colab.reconcile import Reconciler
@@ -56,7 +56,7 @@ def _format_worker_row(row: Any) -> dict[str, Any]:
 @router.get("/accounts")
 async def list_accounts(
     request: Request,
-    _user: UserRecord = Depends(get_current_user),
+    _admin: UserRecord = Depends(require_admin),
 ) -> dict[str, Any]:
     pool: AccountPool = request.app.state.account_pool
     return {"accounts": await pool.list_accounts()}
@@ -127,7 +127,7 @@ async def refresh_accounts(
 
 @router.get("/workers")
 async def list_workers(
-    _user: UserRecord = Depends(get_current_user),
+    _admin: UserRecord = Depends(require_admin),
     db: Database = Depends(get_db),
 ) -> dict[str, Any]:
     rows = await db.fetchall(

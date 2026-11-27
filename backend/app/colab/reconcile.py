@@ -195,5 +195,9 @@ class Reconciler:
             "external_discovered": external_discovered,
             "failed_stale_jobs": failed_stale_jobs,
         }
-        await self.events.publish("pool.updated", {"reason": "reconciled", **summary})
+        await self.events.publish(
+            "pool.updated",
+            {"reason": "reconciled", **summary},
+            admin_only=True,
+        )
         return summary

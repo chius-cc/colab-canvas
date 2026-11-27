@@ -139,6 +139,40 @@ async def test_setup_login_invite_and_admin_flows(tmp_path) -> None:
         )
         assert (await client.post("/api/admin/invites", json={"max_uses": 1})).status_code == 403
 
+        # Member can change own local password with current password verification
+        me_resp = await client.get("/api/auth/me")
+        assert me_resp.json()["user"]["has_password"] is True
+
+        wrong_pw = await client.post(
+            "/api/auth/change-password",
+            json={"current_password": "wrongpassword", "new_password": "newfriendpassword456"},
+        )
+        assert wrong_pw.status_code == 400
+
+        short_pw = await client.post(
+            "/api/auth/change-password",
+            json={"current_password": "friendpassword123", "new_password": "short"},
+        )
+        assert short_pw.status_code == 422
+
+        changed = await client.post(
+            "/api/auth/change-password",
+            json={"current_password": "friendpassword123", "new_password": "newfriendpassword456"},
+        )
+        assert changed.status_code == 200 and changed.json() == {"ok": True}
+
+        await client.post("/api/auth/logout")
+        old_login = await client.post(
+            "/api/auth/login",
+            json={"identifier": "friend", "password": "friendpassword123"},
+        )
+        assert old_login.status_code == 401
+        new_login = await client.post(
+            "/api/auth/login",
+            json={"identifier": "friend", "password": "newfriendpassword456"},
+        )
+        assert new_login.status_code == 200
+
 
 async def test_cloudflare_access_jwt_verification_and_spoof_rejection(tmp_path) -> None:
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)

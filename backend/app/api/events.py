@@ -26,12 +26,15 @@ class BusEvent:
     event_type: str
     data: dict[str, Any]
     user_id: str | None
+    admin_only: bool = False
 
     def format_sse(self) -> str:
         payload = json.dumps(self.data, separators=(",", ":"))
         return f"id: {self.id}\nevent: {self.event_type}\ndata: {payload}\n\n"
 
     def visible_to(self, user: UserRecord) -> bool:
+        if self.admin_only and not user.is_admin:
+            return False
         return self.user_id is None or user.is_admin or self.user_id == user.id
 
 
@@ -64,6 +67,7 @@ class EventBus:
         data: dict[str, Any],
         *,
         user_id: str | None = None,
+        admin_only: bool = False,
     ) -> int:
         async with self._lock:
             event = BusEvent(
@@ -71,6 +75,7 @@ class EventBus:
                 event_type=event_type,
                 data=data,
                 user_id=user_id,
+                admin_only=admin_only,
             )
             self._next_id += 1
             self._buffer.append(event)

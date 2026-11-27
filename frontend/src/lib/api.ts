@@ -124,6 +124,11 @@ export const authApi = {
     apiFetch<{ ok: boolean }>("/api/auth/logout", {
       method: "POST",
     }),
+  changePassword: (body: { current_password: string; new_password: string }) =>
+    apiFetch<{ ok: boolean }>("/api/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };
 
 export const workflowsApi = {

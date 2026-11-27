@@ -16,6 +16,7 @@ import {
   Square,
   Trash2,
   Upload,
+  UserCog,
   Users,
 } from "lucide-react";
 import { interpolate, useI18n } from "@/i18n";
@@ -61,8 +62,9 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { AccountView } from "@/components/account/AccountView";
 
-export type ConsoleTab = "compute" | "assistant" | "loras" | "access";
+export type ConsoleTab = "compute" | "assistant" | "loras" | "access" | "account";
 
 interface PoolAdminViewProps {
   user: AuthUser;
@@ -517,6 +519,10 @@ export function PoolAdminView({
     }
   };
 
+  if (!isAdmin) {
+    return <AccountView user={user} />;
+  }
+
   return (
     <div className="space-y-5">
       {bannerError && (
@@ -571,6 +577,10 @@ export function PoolAdminView({
                 <TabsTrigger value="access">
                   <Users className="h-3.5 w-3.5" />
                   {dict.pool.tabs.access}
+                </TabsTrigger>
+                <TabsTrigger value="account">
+                  <UserCog className="h-3.5 w-3.5" />
+                  {dict.account.myAccountTab}
                 </TabsTrigger>
               </>
             )}
@@ -1591,6 +1601,12 @@ export function PoolAdminView({
                 </div>
               </section>
             </div>
+          </TabsContent>
+        )}
+
+        {isAdmin && (
+          <TabsContent value="account">
+            <AccountView user={user} embedded />
           </TabsContent>
         )}
       </Tabs>

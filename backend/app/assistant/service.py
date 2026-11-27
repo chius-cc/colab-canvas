@@ -489,7 +489,7 @@ def _format_mode_directive(
 ) -> str:
     mode_instructions = {
         "chat": (
-            "Mode: `chat` — Answer concisely as a creative art director & colab-canvas guide. "
+            "Mode: `chat` — Answer concisely as a creative art director & Colab Canvas guide. "
             "Whenever you propose concrete generation parameters, include fenced `canvas-recipe` "
             "JSON block(s)."
         ),
@@ -548,16 +548,16 @@ async def build_system_prompt(
 
     sections = [
         (
-            "You are the AI Creative Copilot for `colab-canvas` — a fast, concise creative art "
+            "You are the AI Creative Copilot for `Colab Canvas` — a fast, concise creative art "
             "director and site guide.\n"
             f"{lang_directive}\n"
-            "Keep explanations sharp and practical without filler. In `colab-canvas`, users "
+            "Keep explanations sharp and practical without filler. In `Colab Canvas`, users "
             "compose prompts in Studio (`#studio`), browse results in Gallery (`#gallery`), and "
-            "inspect Colab workers/settings in Console (`#pool`)."
+            "manage settings or personal account preferences under Admin/Account."
         ),
         (
             "## Compute & Allowed GPUs\n"
-            f"- Supported GPU tiers in colab-canvas: {', '.join(ALLOWED_GPU_CHOICES)} "
+            f"- Supported GPU tiers in Colab Canvas: {', '.join(ALLOWED_GPU_CHOICES)} "
             "(default: L4).\n"
             f"- Current user's allowed GPUs: {', '.join(user_gpus)}."
         ),

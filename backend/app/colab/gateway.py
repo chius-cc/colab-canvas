@@ -100,9 +100,10 @@ class AssignedSession:
 class ColabGateway:
     """Thread-safe wrapper around colab_cli.client, ColabRuntime, and isolated SSH proxy."""
 
-    def __init__(self, ssh_dir: Path, assign_retries: int = 5) -> None:
+    def __init__(self, ssh_dir: Path, assign_retries: int = 5, proxy_url: str = "") -> None:
         self.ssh_dir = ssh_dir
         self.assign_retries = max(1, assign_retries)
+        self.proxy_url = proxy_url.strip()
         self._assign_env_lock = threading.Lock()
 
     @property
@@ -202,18 +203,26 @@ class ColabGateway:
         env = os.environ.copy()
         env["HOME"] = str(home_dir)
         env["GOOGLE_APPLICATION_CREDENTIALS"] = str(adc_path)
+        if self.proxy_url:
+            env["HTTPS_PROXY"] = self.proxy_url
+            env["HTTP_PROXY"] = self.proxy_url
         return proxy_cmd, env
 
     def _build_client(self, adc_json: dict[str, Any]) -> tuple[Client, AuthorizedSession]:
         try:
             creds = Credentials.from_authorized_user_info(adc_json)
             if not creds.valid:
-                creds.refresh(Request())
+                authed_tmp = AuthorizedSession(creds)
+                if self.proxy_url:
+                    authed_tmp.proxies = {"http": self.proxy_url, "https": self.proxy_url}
+                creds.refresh(Request(session=authed_tmp))
         except Exception as exc:
             raise CredentialsInvalidError(
                 f"Invalid or unrefreshable ADC credentials: {exc}"
             ) from exc
         authed = AuthorizedSession(creds)
+        if self.proxy_url:
+            authed.proxies = {"http": self.proxy_url, "https": self.proxy_url}
         return Client(Prod(), authed), authed
 
     async def verify_adc_credentials(self, adc_json: dict[str, Any]) -> tuple[str, CcuSnapshot]:

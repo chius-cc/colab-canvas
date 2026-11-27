@@ -273,8 +273,9 @@ class WorkerManager:
         await self.events.publish(
             "worker.updated",
             {"worker_id": worker.worker_id, "status": "stopped", "reason": reason},
+            admin_only=True,
         )
-        await self.events.publish("pool.updated", {"reason": reason})
+        await self.events.publish("pool.updated", {"reason": reason}, admin_only=True)
 
     async def _reconnect_active_worker(self) -> ManagedWorkerState:
         worker = self._active
@@ -378,6 +379,7 @@ class WorkerManager:
             await self.events.publish(
                 "pool.gpu_unavailable",
                 {"gpu_type": gpu_type, "job_id": job_id},
+                admin_only=True,
             )
             return None
 
@@ -414,6 +416,7 @@ class WorkerManager:
         await self.events.publish(
             "worker.updated",
             {"worker_id": worker_id, "status": "bootstrapping", "gpu_type": sess.gpu_type},
+            admin_only=True,
         )
         await self._set_job_stage(
             job_id,
@@ -486,6 +489,7 @@ class WorkerManager:
             await self.events.publish(
                 "worker.updated",
                 {"worker_id": worker_id, "status": "ready", "gpu_type": sess.gpu_type},
+                admin_only=True,
             )
             return worker_state
         except Exception:
@@ -498,6 +502,7 @@ class WorkerManager:
             await self.events.publish(
                 "worker.updated",
                 {"worker_id": worker_id, "status": "error"},
+                admin_only=True,
             )
             raise
 
@@ -863,6 +868,7 @@ class WorkerManager:
                 await self.events.publish(
                     "worker.updated",
                     {"worker_id": worker_id, "status": "stopped", "reason": "emergency_stop"},
+                    admin_only=True,
                 )
 
             now_iso = datetime.now(UTC).isoformat()

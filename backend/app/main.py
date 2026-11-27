@@ -81,6 +81,7 @@ def create_app(
         gateway = colab_gateway or ColabGateway(
             ssh_dir=cfg.ssh_dir,
             assign_retries=cfg.colab_assign_retries,
+            proxy_url=cfg.colab_http_proxy,
         )
         account_pool = AccountPool(
             db=db,
@@ -142,11 +143,11 @@ def create_app(
             await uploader.stop()
             await db.close()
 
-    app = FastAPI(title="colab-canvas", version="0.2.1", lifespan=lifespan)
+    app = FastAPI(title="Colab Canvas", version="0.2.2", lifespan=lifespan)
 
     @app.get("/api/health", tags=["health"])
     async def health() -> dict[str, str]:
-        return {"status": "ok", "version": "0.2.1"}
+        return {"status": "ok", "version": "0.2.2"}
 
     app.include_router(auth_router)
     app.include_router(admin_router)

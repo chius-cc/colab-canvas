@@ -27,6 +27,7 @@ class UserRecord:
     max_queued: int
     allowed_gpus: tuple[str, ...]
     created_at: str
+    has_password: bool = True
 
     @property
     def is_admin(self) -> bool:
@@ -48,6 +49,7 @@ def row_to_user(row) -> UserRecord:
         max_queued=int(row["max_queued"]),
         allowed_gpus=gpus,
         created_at=row["created_at"],
+        has_password=bool(row["password_hash"]),
     )
 
 
@@ -184,6 +186,30 @@ async def authenticate_local(db: Database, identifier: str, password: str) -> Us
     if not verify_password(password, row["password_hash"]):
         return None
     return row_to_user(row)
+
+
+async def change_local_password(
+    db: Database,
+    *,
+    user_id: str,
+    current_password: str,
+    new_password: str,
+) -> None:
+    row = await db.fetchone("SELECT password_hash FROM users WHERE id = ?", (user_id,))
+    if row is None or not row["password_hash"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password change is unavailable for SSO-only accounts",
+        )
+    if not verify_password(current_password, str(row["password_hash"])):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+    await db.execute(
+        "UPDATE users SET password_hash = ? WHERE id = ?",
+        (hash_password(new_password), user_id),
+    )
 
 
 async def register_with_invite(

@@ -4,12 +4,13 @@ import {
   MessageSquareText,
   Radio,
   SlidersHorizontal,
-  Stamp,
+  UserCog,
   Wand2,
 } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type { AuthMode, AuthUser, SseConnectionState } from "@/types/api";
+import { BrandMark } from "@/components/BrandMark";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,7 +19,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-export type AppRoute = "chat" | "studio" | "gallery" | "pool";
+export type AppRoute = "studio" | "chat" | "gallery" | "pool" | "account";
 
 interface TopShellProps {
   route: AppRoute;
@@ -49,10 +50,12 @@ export function TopShell({
     href: string;
     icon: typeof Wand2;
   }> = [
-    { id: "chat", label: dict.nav.inspire, href: "#chat", icon: MessageSquareText },
     { id: "studio", label: dict.nav.studio, href: "#studio", icon: Wand2 },
+    { id: "chat", label: dict.nav.inspire, href: "#chat", icon: MessageSquareText },
     { id: "gallery", label: dict.nav.gallery, href: "#gallery", icon: Images },
-    { id: "pool", label: dict.nav.console, href: "#pool", icon: SlidersHorizontal },
+    user.role === "admin"
+      ? { id: "pool", label: dict.nav.console, href: "#pool", icon: SlidersHorizontal }
+      : { id: "account", label: dict.nav.account, href: "#account", icon: UserCog },
   ];
 
   const sseLabel =
@@ -76,9 +79,7 @@ export function TopShell({
             }}
             className="flex items-center gap-2 text-[#1A1D24] hover:opacity-85 transition-opacity"
           >
-            <span className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[#ECC5BD] bg-[#FDF1EE] text-[#C85642]">
-              <Stamp className="h-4 w-4" />
-            </span>
+            <BrandMark className="h-7 w-7 shrink-0" />
             <span className="font-display text-base font-semibold tracking-tight">
               {dict.app.brand}
             </span>

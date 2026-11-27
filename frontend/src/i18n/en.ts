@@ -21,7 +21,7 @@ export type TranslationSchema = Omit<Widen<typeof zh>, "chat"> & {
 
 export const en: TranslationSchema = {
   app: {
-    brand: "colab-canvas",
+    brand: "Colab Canvas",
     connecting: "Connecting to studio...",
     apiUnreachable: "Studio API Unreachable",
     retryConnection: "Retry Connection",
@@ -37,10 +37,11 @@ export const en: TranslationSchema = {
     copied: "Copied",
   },
   nav: {
-    inspire: "Inspire",
     studio: "Studio",
+    inspire: "AI Chat",
     gallery: "Gallery",
-    console: "Console",
+    console: "Admin",
+    account: "Account",
   },
   shell: {
     sseLive: "SSE Live",
@@ -374,5 +375,27 @@ export const en: TranslationSchema = {
       variations: "Create 3 distinct creative variations based on my current Studio theme.",
       diagnose: "Review my current Studio parameters (steps, CFG, dimensions, LoRAs) and return an improved recipe.",
     },
+  },
+  account: {
+    title: "Account",
+    profileTitle: "Profile",
+    username: "Username",
+    email: "Email",
+    role: "Role",
+    dailyQuota: "Daily Quota",
+    unlimited: "Unlimited",
+    maxQueued: "Queue Limit",
+    allowedGpus: "Allowed GPUs",
+    changePasswordTitle: "Change Password",
+    currentPassword: "Current Password",
+    newPassword: "New Password (min 8 chars)",
+    confirmPassword: "Confirm New Password",
+    submitPassword: "Update Password",
+    updatingPassword: "Updating...",
+    passwordUpdated: "Password updated.",
+    passwordTooShort: "New password must be at least 8 characters.",
+    passwordMismatch: "New passwords do not match.",
+    ssoNoPassword: "This account signs in via SSO without a local password.",
+    myAccountTab: "My Account",
   },
 };

@@ -1264,13 +1264,14 @@ export function StudioView({
           {/* Artboard Top Strip */}
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#E5E0D6] px-5 py-3">
             <div className="flex items-center gap-2">
-              {activeManagedWorker ? (
-                <Badge variant="sage" className="font-mono">
-                  {activeManagedWorker.gpu_type} · {activeManagedWorker.status}
-                </Badge>
-              ) : (
-                <Badge variant="neutral">{dict.studio.workerStandby}</Badge>
-              )}
+              {user.role === "admin" &&
+                (activeManagedWorker ? (
+                  <Badge variant="sage" className="font-mono">
+                    {activeManagedWorker.gpu_type} · {activeManagedWorker.status}
+                  </Badge>
+                ) : (
+                  <Badge variant="neutral">{dict.studio.workerStandby}</Badge>
+                ))}
               {focusedJob && (
                 <>
                   {statusBadge(focusedJob.status)}
